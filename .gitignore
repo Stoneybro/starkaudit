@@ -1,0 +1,26 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# build outputs
+.next/
+out/
+dist/
+build/
+
+# logs
+*.log
+
+# env
+.env*
+!.env.example
+
+# os / editor
+.DS_Store
+Thumbs.db
+.idea/
+
+# typescript / next
+*.tsbuildinfo
+next-env.d.ts
+
