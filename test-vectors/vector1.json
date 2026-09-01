@@ -1,0 +1,17 @@
+{
+  "_comment": "Populated by scripts/verify_vectors.ts after Stage 2 (deposit + private transfer on Sepolia).",
+  "_status": "EMPTY — run: pnpm tsx scripts/verify_vectors.ts",
+  "channel_key": "",
+  "token": "",
+  "index": 0,
+  "salt": "",
+  "amount": "",
+  "owner_private_key": "REDACTED_DO_NOT_COMMIT",
+  "computed_nullifier": "",
+  "onchain_nullifier": "",
+  "computed_enc_amount": "",
+  "onchain_enc_amount": "",
+  "note_id": "",
+  "match": false,
+  "verified_at_block": null
+}
