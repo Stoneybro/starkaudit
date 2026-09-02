@@ -38,15 +38,15 @@ export interface AuditResult {
   submitted_at: number
 }
 
-// Domain separator tags — MUST match starkware-libs/starknet-privacy constants.cairo
-// [VERIFY] These are placeholders — confirm from source before using in circuit
+// Domain separator tags — MUST match starkware-libs/starknet-privacy/src/hashes.cairo
+// Verified from https://raw.githubusercontent.com/starkware-libs/starknet-privacy/main/sdk/src/utils/hashes.ts
+// and packages/privacy/src/hashes.cairo domain_separation module
 export const TAGS = {
-  // TODO: replace with values from packages/privacy/src/constants.cairo
-  NULLIFIER_TAG: 0n,          // [VERIFY]
-  ENC_AMOUNT_TAG: 0n,         // [VERIFY]
-  NOTE_ID_TAG: 0n,            // [VERIFY]
-  // StarkAudit domain separators (choose distinct felts, not colliding with above)
-  PRIVATE_AUDIT_TAG: BigInt("0x7374617263617564697431"), // "starkaudit1" as felt
-  DUP_TAG:           BigInt("0x7374617263617564697432"), // "starkaudit2" as felt
-  THRESHOLD_TAG:     BigInt("0x7374617263617564697433"), // "starkaudit3" as felt
+  NULLIFIER_TAG: BigInt("0x4e554c4c49464945525f5441473a5631"), // 'NULLIFIER_TAG:V1'
+  ENC_AMOUNT_TAG: BigInt("0x454e435f414d4f554e545f5441473a5631"), // 'ENC_AMOUNT_TAG:V1'
+  NOTE_ID_TAG: BigInt("0x4e4f54455f49445f5441473a5631"), // 'NOTE_ID_TAG:V1'
+  // StarkAudit domain separators (distinct, not colliding)
+  PRIVATE_AUDIT_TAG: BigInt("0x7374617263617564697431"), // "starkaudit1"
+  DUP_TAG:           BigInt("0x7374617263617564697432"), // "starkaudit2"
+  THRESHOLD_TAG:     BigInt("0x7374617263617564697433"), // "starkaudit3"
 } as const

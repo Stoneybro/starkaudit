@@ -71,19 +71,20 @@ export function deriveNullifier(note: AuditWitness["note"]): bigint {
 /**
  * Derive enc_amount from note internals.
  * enc_amount = poseidon(ENC_AMOUNT_TAG, channel_key, token, index, 0, salt) + amount
+ * On-chain packed_value stores enc_amount in low 128 bits (salt in high 128), so mask to 128 for comparison.
  *
- * [VERIFY] Tag must match starkware-libs/starknet-privacy constants.cairo
+ * [VERIFY] Tag must match starkware-libs/starknet-privacy/src/hashes.cairo
  */
 export function deriveEncAmount(note: AuditWitness["note"]): bigint {
   const mask = poseidonHashMany([
-    TAGS.ENC_AMOUNT_TAG,  // [VERIFY]
+    TAGS.ENC_AMOUNT_TAG,  // verified 'ENC_AMOUNT_TAG:V1' 0x454e...
     note.channel_key,
     note.token,
     note.index,
     0n,
     note.salt,
   ])
-  return mask + note.amount
+  return (mask + note.amount) & ((1n << 128n) - 1n)
 }
 
 /**

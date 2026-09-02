@@ -11,39 +11,44 @@ Each stage has a **gate**. Never skip.
 
 ## Stage 0 — Environment
 
-Tasks: `nvm install 24 && nvm use 24` (`>=24` for SDK), `scarb`, `snforge`, `gh auth refresh -h github.com -s read:packages` + `export NODE_AUTH_TOKEN`, get Sepolia ETH + STRK, ask `t.me/sncorestars` for `PROVING_SERVICE_URL` + `INDEXER_URL`, create Sepolia account.
+Tasks: `nvm install 24 && nvm use 24` (`>=24` for SDK `ohttp-ts`), `scarb`/`snforge` later. `gh auth refresh -h github.com -s read:packages` (need `read:packages` scope, `gh auth status` shows it) → `pnpm config set @starkware-libs:registry https://npm.pkg.github.com --location=project` + `pnpm config set "//npm.pkg.github.com/:_authToken" "$(gh auth token)" --location=user` (pnpm 10 ignores `${NODE_AUTH_TOKEN}` in project `.npmrc`). Sepolia **STRK only** via `https://faucet.starknet.io` (100 STRK pays deploy+register; ETH `0x049d...` not needed, STRK `0x04718...` is fee token) — bridge not needed. Ask `t.me/sncorestars` for Sepolia `PROVING_SERVICE_URL=https://transaction-prover.alpha-sepolia.sw-dev.io` + `INDEXER_URL=http://35.192.48.142:8080` (Mainnet proving is Starkscan `https://api.starkscan.co/v1/SN_MAIN/prove` `X-Starkscan-Api-Key` via `prover.ts:3`). Create **OZ** Sepolia account `classHash 0x05b4b537eaa2399e3aa99c4e2e0208ebd6c71bc1467938cd52c798c601e43564` (OZ, `cairoVersion:"1"`; `0x061dac...` not declared on Sepolia, Argent `0x03607833...` fails `argent/multicall-failed` on pool).
 
-Gate: `node v24`, `scarb --version`, `snforge --version`, `gh auth status`, have both URLs.
+Gate: `node v24`, `gh auth status` has `read:packages`, `.npmrc:1` registry + user `~/.npmrc` auth, `pnpm --filter audit-sdk add @starkware-libs/starknet-privacy-sdk starknet@10.4.0` succeeds, have both URLs, `VIEWING_KEY` decimal BigInt in `[1, MAX_VIEWING_KEY]`.
 
 ---
 
 ## Stage 1 — SDK Register (Sepolia)
 
-Scaffold `packages/audit-sdk` `@starkaudit/audit-sdk`, set `pnpm config set @starkware-libs:registry` + `.npmrc` placeholder, `pnpm --filter audit-sdk add @starkware-libs/starknet-privacy-sdk starknet@10.4.0`.
+Scaffold `packages/audit-sdk` `@starkaudit/audit-sdk`, `pnpm --filter audit-sdk add @starkware-libs/starknet-privacy-sdk@0.14.3-rc.6 starknet@10.4.0` + `pnpm add starknet@10.4.0 -w` for `scripts/` ESM, `pnpm config set` as Stage 0.
 
-`connect.ts`:
+Deploy OZ first: `sncast` or `Account.deployAccount({classHash: "0x05b4b537eaa2399e3aa99c4e2e0208ebd6c71bc1467938cd52c798c601e43564", constructorCalldata:[pub], addressSalt:0})` → fund `100 STRK` via faucet before deploy (counterfactual can receive). Wait `head-10 > deployReceiptBlock`. Then `approve(STRK 0x04718..., POOL 0x0254a6..., 1000 STRK)` → wait `head-10 > approveBlock` (pool `register` needs `STRK` allowance or reverts `Insufficient ERC20 allowance` `0x0254a6...:0x0246333a...`).
+
+`connect.ts:60`:
 ```ts
 const transfers = createPrivateTransfers({ account: new Account({provider, address, signer, cairoVersion:"1"}),
   viewingKeyProvider:{getViewingKey: async()=>BigInt(VIEWING_KEY!)},
   provingProvider:{url: PROVING_SERVICE_URL!, chainId: constants.StarknetChainId.SN_SEPOLIA},
   discoveryProvider:{url: INDEXER_URL!}, poolContractAddress: SEPOLIA_POOL })
-const provingBlockId=(await provider.getBlockNumber())-10 // wait head-10>deployReceiptBlock if fresh
-const {callAndProof}= await transfers.build().register().execute({provingBlockId}) // or autoRegister path
-const proofDetails= callAndProof.proof.proofFacts?.length ? {proofFacts:..., proof:...}:{}
-await account.execute(callAndProof.call,{tip:0n, ...proofDetails})
+const provingBlockId=(await provider.getBlockNumber())-10 // must be > deployBlock+10 and > approveBlock+10
+const {callAndProof}= await transfers.build().register().execute({provingBlockId})
+const proofDetails= callAndProof.proof.proofFacts?.length ? {proofFacts: callAndProof.proof.proofFacts, proof: callAndProof.proof.data}:{}
+const est= await account.estimateInvokeFee(callAndProof.call,{tip:0n,...proofDetails}) // STRK fee, l2_gas 119542080
+const resourceBounds={l1_gas:scale(est.resourceBounds.l1_gas,1.3), l2_gas:scale(est.resourceBounds.l2_gas,1.3), l1_data_gas:scale(est.resourceBounds.l1_data_gas,1.3)}
+await account.execute(callAndProof.call,{tip:0n, resourceBounds, ...proofDetails})
 ```
+Run via `node --import tsx/esm --env-file=.env ./scripts/register.ts` (not `pnpm tsx` default `ERR_PACKAGE_PATH_NOT_EXPORTED` for `type:module` `exports "."` `import` only).
 
-Gate: Voyager Sepolia `Succeeded` + `ViewingKeySet` event.
+Gate: Voyager Sepolia `Succeeded` + `ViewingKeySet` event. Verified `tx 0x7b390c5bbb2e453d7f7ed6021fd40e2c28637257d64bde8750a636e4482e906` `block 14448022` `OZ 0x03132f...` `l2_gas 119542080` `overall_fee 5934832810840042176`.
 
-Fail: `INVALID_NONCE` -> `invalidateProofNonceCache()`, `BigInt` hex -> decimal string.
+Fail: `INVALID_NONCE` → `transfers.invalidateProofNonceCache()` then rebuild; `BigInt` hex → decimal; `Resource bounds exceed balance (99953981675535750432)` → use `estimateFee` +30%; `argent/multicall-failed` → use OZ; `Class not declared 0x061dac...` → use `0x05b4b53...`.
 
 ---
 
 ## Stage 2 — Shield (2 tx)
 
-`approve(token, POOL, 2 STRK low=... high=0)` -> wait `head-10>approveBlock` (poll 5s) -> `.build({autoRegister:true}).with(token, t=>t.deposit({amount}).autoSetup(true).surplusTo(addr)).execute({provingBlockId})`.
+If `approve(pool,1000 STRK)` for Stage 1 already done and `allowance >=2 STRK`, skip `approve`; else `approve(token 0x04718..., POOL 0x0254a6..., 2 STRK low=2000000000000000000 high=0)` → wait `head-10>approveBlock` (poll 5s, transparent-state rule) → `transfers.build({autoRegister:true}).with(token, t=>t.deposit({amount:2000000000000000000n}).autoSetup(true).surplusTo(addr)).execute({provingBlockId})` (same `head-10` + `tip:0n` + `proofDetails` tail as Stage 1, OZ `0x03132f...`).
 
-Gate: both `Succeeded`, pool `Deposit(depositor,token,amount)` amount public as expected.
+Gate: both `Succeeded`, pool `Deposit(depositor,token,amount)` amount public as expected. Next tx must wait `head-10 > depositBlock+10` (note maturity).
 
 ---
 

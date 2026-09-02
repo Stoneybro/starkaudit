@@ -9,7 +9,7 @@
  * Output: test-vectors/vector1.json with match: true/false
  */
 
-import { RpcProvider, hash } from "starknet"
+import { RpcProvider } from "starknet"
 import { writeFileSync } from "fs"
 import { resolve } from "path"
 
@@ -17,35 +17,14 @@ import { resolve } from "path"
 const RPC_URL = process.env.STARKNET_RPC_URL!
 const POOL_ADDRESS = process.env.POOL_ADDRESS!
 
-// [VERIFY] Copy these exact values from:
-// starkware-libs/starknet-privacy/packages/privacy/src/constants.cairo
-// Do NOT guess — wrong tags = wrong derivations.
-const NULLIFIER_TAG  = 0n  // [REPLACE]
-const ENC_AMOUNT_TAG = 0n  // [REPLACE]
-const NOTE_ID_TAG    = 0n  // [REPLACE]
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-const poseidon = (inputs: bigint[]): bigint =>
-  BigInt(hash.computePoseidonHashOnElements(inputs))
-
-function deriveNullifier(
-  channel_key: bigint, token: bigint, index: bigint, owner_private_key: bigint
-): bigint {
-  return poseidon([NULLIFIER_TAG, channel_key, token, index, 0n, owner_private_key])
-}
-
-function deriveEncAmount(
-  channel_key: bigint, token: bigint, index: bigint, salt: bigint, amount: bigint
-): bigint {
-  const mask = poseidon([ENC_AMOUNT_TAG, channel_key, token, index, 0n, salt])
-  return mask + amount
-}
-
-function deriveNoteId(
-  channel_key: bigint, token: bigint, index: bigint
-): bigint {
-  return poseidon([NOTE_ID_TAG, channel_key, token, index, 0n])
-}
+// Rewired to single source of truth — no drift vs build_witness.ts
+import { deriveNullifier as deriveNullifierWitness, deriveEncAmount as deriveEncAmountWitness, deriveNoteId as deriveNoteIdWitness } from "../packages/audit-sdk/src/build_witness.js"
+const deriveNullifier = (channel_key: bigint, token: bigint, index: bigint, owner_private_key: bigint) =>
+  deriveNullifierWitness({ channel_key, token, index, amount: 0n, salt: 0n, owner_private_key } as any)
+const deriveEncAmount = (channel_key: bigint, token: bigint, index: bigint, salt: bigint, amount: bigint) =>
+  deriveEncAmountWitness({ channel_key, token, index, amount, salt, owner_private_key: 0n } as any)
+const deriveNoteId = (channel_key: bigint, token: bigint, index: bigint) =>
+  deriveNoteIdWitness({ channel_key, token, index, amount: 0n, salt: 0n, owner_private_key: 0n } as any)
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 async function main() {
