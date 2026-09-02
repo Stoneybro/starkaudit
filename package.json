@@ -19,5 +19,9 @@
   "devDependencies": {
     "@types/node": "^26.4.1",
     "tsx": "^4.23.13"
+  },
+  "dependencies": {
+    "@starkware-libs/starknet-privacy-sdk": "0.14.3-rc.6",
+    "starknet": "10.4.0"
   }
 }
