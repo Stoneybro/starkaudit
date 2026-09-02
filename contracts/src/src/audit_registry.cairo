@@ -3,7 +3,6 @@
 // Spec: proposedspec.md §5
 
 use starknet::ContractAddress;
-use starknet::storage::Map;
 
 // ── Data Structures ──────────────────────────────────────────────────────────
 
@@ -79,7 +78,7 @@ pub trait IAuditRegistry<T> {
 mod AuditRegistry {
     use super::{AuditResult, IAuditRegistry, ProofSubmitted, ExceptionFlagged, ThresholdUpdated, BusinessRegistered};
     use starknet::{ContractAddress, get_caller_address, get_block_timestamp};
-    use starknet::storage::Map;
+    use starknet::storage::{Map, StoragePointerReadAccess, StoragePointerWriteAccess, StoragePathEntry};
 
     #[storage]
     struct Storage {
@@ -116,7 +115,7 @@ mod AuditRegistry {
         /// Register a business address (auditor-only for demo simplicity).
         fn register_business(ref self: ContractState, addr: ContractAddress) {
             self._assert_auditor();
-            self.businesses.write(addr, true);
+            self.businesses.entry(addr).write(true);
             self.emit(BusinessRegistered { business: addr });
         }
 
@@ -154,7 +153,7 @@ mod AuditRegistry {
             public_inputs: Span<felt252>,
         ) {
             // Step 0: anti-replay
-            assert(!self.result_exists.read(nullifier), 'ALREADY_SUBMITTED');
+            assert(!self.result_exists.entry(nullifier).read(), 'ALREADY_SUBMITTED');
 
             // Step 1: storage check
             // [VERIFY] Check if pool exposes a view for note payload at note_id.
@@ -170,10 +169,10 @@ mod AuditRegistry {
             // Step 3: duplicate detection
             let now = get_block_timestamp();
             let window = self.duplicate_window.read();
-            let first_seen = self.dup_seen.read(dup_commit);
+            let first_seen = self.dup_seen.entry(dup_commit).read();
             let is_duplicate = first_seen != 0 && (now - first_seen) <= window;
             if !is_duplicate {
-                self.dup_seen.write(dup_commit, now);
+                self.dup_seen.entry(dup_commit).write(now);
             }
 
             // pass = true only if proof verifies (currently deferred) AND not duplicate
@@ -191,8 +190,8 @@ mod AuditRegistry {
                 submitted_at: now,
                 is_duplicate,
             };
-            self.results.write(nullifier, result);
-            self.result_exists.write(nullifier, true);
+            self.results.entry(nullifier).write(result);
+            self.result_exists.entry(nullifier).write(true);
             self.emit(ProofSubmitted { nullifier, pass, is_duplicate, unverified_binding: false, offchain_verified });
         }
 
@@ -203,12 +202,12 @@ mod AuditRegistry {
         }
 
         fn get_result(self: @ContractState, nullifier: felt252) -> AuditResult {
-            assert(self.result_exists.read(nullifier), 'NOT_FOUND');
-            self.results.read(nullifier)
+            assert(self.result_exists.entry(nullifier).read(), 'NOT_FOUND');
+            self.results.entry(nullifier).read()
         }
 
         fn is_registered(self: @ContractState, addr: ContractAddress) -> bool {
-            self.businesses.read(addr)
+            self.businesses.entry(addr).read()
         }
 
         fn get_threshold_commitment(self: @ContractState) -> felt252 {

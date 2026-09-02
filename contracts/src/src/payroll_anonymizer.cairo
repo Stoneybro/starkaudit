@@ -13,7 +13,7 @@ use starknet::ContractAddress;
 // OpenNoteDeposit is defined in the privacy pool package.
 // For compilation without the pool dependency, we declare it locally.
 // When integrating with the real pool, import from privacy::objects.
-#[derive(Drop, Serde)]
+#[derive(Drop, Copy, Serde)]
 pub struct OpenNoteDeposit {
     pub note_id: felt252,
     pub token: ContractAddress,
@@ -31,6 +31,7 @@ pub trait IPayrollAnonymizer<T> {
 mod PayrollAnonymizer {
     use super::{OpenNoteDeposit, IPayrollAnonymizer};
     use starknet::{ContractAddress, get_caller_address, get_contract_address};
+    use starknet::storage::{StoragePointerReadAccess, StoragePointerWriteAccess};
 
     // ERC-20 interface (minimal — only approve and balance_of needed)
     #[starknet::interface]
