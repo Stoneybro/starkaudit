@@ -75,6 +75,7 @@ pub trait IAuditRegistry<T> {
         enc_amount: felt252,
         proof: Span<felt252>,
         public_inputs: Span<felt252>,
+        pass_claim: bool,
     );
     fn flag_exception(ref self: T, nullifier: felt252);
     fn get_result(self: @T, nullifier: felt252) -> AuditResult;
@@ -172,6 +173,10 @@ pub mod AuditRegistry {
         /// Accepted limitation — griefing/front-run ALREADY_SUBMITTED and fabricated
         /// pass are possible; Stage 5 callers submit for their own business and the
         /// auditor filters by the `business` field. See report.md Stage 4 notes.
+        /// `pass_claim` is the submitter's 1-bit threshold verdict (amount itself can
+        /// never go on-chain — calldata is public). The contract enforces
+        /// duplicate-override: `pass = pass_claim && !is_duplicate`. The auditor
+        /// re-verifies the claim off-chain against the commitments.
         /// Steps:
         ///   0. Anti-replay — one result per nullifier
         ///   1. Storage check — enc_amount vs pool payload (offchain_verified if no pool view)
@@ -187,6 +192,7 @@ pub mod AuditRegistry {
             enc_amount: felt252,
             proof: Span<felt252>,
             public_inputs: Span<felt252>,
+            pass_claim: bool,
         ) {
             // Step 0: anti-replay
             assert(!self.result_exists.entry(nullifier).read(), 'ALREADY_SUBMITTED');
@@ -213,9 +219,10 @@ pub mod AuditRegistry {
                 self.dup_seen_exists.entry(dup_commit).write(true);
             }
 
-            // pass = true only if proof verifies (currently deferred) AND not duplicate
-            // For offchain_verified path, pass is set optimistically; indexer overrides.
-            let pass = !is_duplicate; // [UPDATE] once verifier is wired
+            // pass = submitter's threshold claim, overridden to false on duplicate.
+            // (On-chain threshold evaluation arrives with the verifier; until then
+            // the auditor re-verifies the claim off-chain against the commitments.)
+            let pass = pass_claim && !is_duplicate;
 
             // Step 4: store + emit
             let business = get_caller_address();

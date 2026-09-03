@@ -73,7 +73,7 @@ fn test_submit_proof_store_and_emit() {
     let dup_commit = 0x444;
     let enc_amount = 0x555;
     start_cheat_caller_address(dispatcher.contract_address, BUSINESS());
-    dispatcher.submit_proof(nullifier, note_id, audit_commit, dup_commit, enc_amount, array![].span(), array![].span());
+    dispatcher.submit_proof(nullifier, note_id, audit_commit, dup_commit, enc_amount, array![].span(), array![].span(), true);
     stop_cheat_caller_address(dispatcher.contract_address);
     // Check stored
     let res = dispatcher.get_result(nullifier);
@@ -89,13 +89,27 @@ fn test_submit_proof_store_and_emit() {
 }
 
 #[test]
+fn test_submit_proof_fail_claim_stored() {
+    let (_, dispatcher) = deploy_registry();
+    let mut spy = spy_events();
+    let nullifier = 0x5;
+    start_cheat_caller_address(dispatcher.contract_address, BUSINESS());
+    dispatcher.submit_proof(nullifier, 0x50, 0x51, 0x52, 0x53, array![].span(), array![].span(), false);
+    stop_cheat_caller_address(dispatcher.contract_address);
+    let res = dispatcher.get_result(nullifier);
+    assert(res.pass == false, 'fail claim stored');
+    assert(res.is_duplicate == false, 'fresh dup commit');
+    spy.assert_emitted(@array![(dispatcher.contract_address, shadowaudit::audit_registry::AuditRegistry::Event::ProofSubmitted(shadowaudit::audit_registry::ProofSubmitted { nullifier, business: BUSINESS(), pass: false, is_duplicate: false, unverified_binding: false, offchain_verified: true }))]);
+}
+
+#[test]
 #[should_panic(expected: ('ALREADY_SUBMITTED',))]
 fn test_anti_replay_same_nullifier_reverts() {
     let (_, dispatcher) = deploy_registry();
     let nullifier = 0x111;
-    dispatcher.submit_proof(nullifier, 0x222, 0x333, 0x444, 0x555, array![].span(), array![].span());
+    dispatcher.submit_proof(nullifier, 0x222, 0x333, 0x444, 0x555, array![].span(), array![].span(), true);
     // Second submit with same nullifier should revert
-    dispatcher.submit_proof(nullifier, 0x999, 0x888, 0x777, 0x666, array![].span(), array![].span());
+    dispatcher.submit_proof(nullifier, 0x999, 0x888, 0x777, 0x666, array![].span(), array![].span(), true);
 }
 
 #[test]
@@ -107,20 +121,20 @@ fn test_duplicate_window_is_duplicate_true() {
     stop_cheat_caller_address(addr);
     // First proof with dup_commit 0x999
     let dup = 0x999;
-    dispatcher.submit_proof(0x1, 0x10, 0x20, dup, 0x30, array![].span(), array![].span());
+    dispatcher.submit_proof(0x1, 0x10, 0x20, dup, 0x30, array![].span(), array![].span(), true);
     let res1 = dispatcher.get_result(0x1);
     assert(res1.is_duplicate == false, 'first not duplicate');
     assert(res1.pass == true, 'first pass');
     // Second proof same dup_commit within window (timestamp 50)
     start_cheat_block_timestamp(addr, 50);
-    dispatcher.submit_proof(0x2, 0x11, 0x21, dup, 0x31, array![].span(), array![].span());
+    dispatcher.submit_proof(0x2, 0x11, 0x21, dup, 0x31, array![].span(), array![].span(), true);
     let res2 = dispatcher.get_result(0x2);
     assert(res2.is_duplicate == true, 'second should be duplicate');
     assert(res2.pass == false, 'duplicate pass false');
     stop_cheat_block_timestamp(addr);
     // Third outside window (timestamp 200) should not be duplicate
     start_cheat_block_timestamp(addr, 200);
-    dispatcher.submit_proof(0x3, 0x12, 0x22, dup, 0x32, array![].span(), array![].span());
+    dispatcher.submit_proof(0x3, 0x12, 0x22, dup, 0x32, array![].span(), array![].span(), true);
     let res3 = dispatcher.get_result(0x3);
     assert(res3.is_duplicate == false, 'outside window not duplicate');
     stop_cheat_block_timestamp(addr);

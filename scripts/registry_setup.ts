@@ -3,7 +3,7 @@ import { RpcProvider, Account, hash } from "starknet"
 const RPC_URL = process.env.STARKNET_RPC_URL!
 const ACCOUNT_ADDRESS = process.env.ACCOUNT_ADDRESS!
 const ACCOUNT_PK = process.env.ACCOUNT_PRIVATE_KEY!
-const REGISTRY = "0x370a79cda6910a14946ad9f4dda555a9920be715549ea658f80a9990ce2858d"
+const REGISTRY = "0x1ce7138415c267093450c95241c0a02e1e5cd1b4db52452149fa05f36d6ead6"
 const BUSINESS = ACCOUNT_ADDRESS // for demo, business is same as auditor
 const THRESHOLD = 1000000000000000000n // 1 STRK
 const AUDITOR_SALT = 0xcafebabefn

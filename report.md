@@ -32,7 +32,17 @@
 
 
 ## Next
-Stage 5 Pass/Fail/Duplicate end-to-end (`submit_proof` via SDK witness, Voyager `ProofSubmitted pass:true/false/is_duplicate:true`, no amount in event).
+Stage 6 PayrollAnonymizer (`contracts/src/src/payroll_anonymizer.cairo` `TODO` distribution + `snforge` ABI test + Sepolia invoke).
+
+## Stage 5 gate: PASSED (2026-09-03, WSL)
+- Three self-transfers (payee=self, counterparty=`poseidon([account])`, period=`20260903`, threshold 1 STRK) + `submit_proof` each, all nullifiers chain-verified via pool `nullifier_exists` before submit:
+  - LEG1-PASS: 0.5 STRK transfer `0x6646572d...` (block 14495905, old registry — see note) then re-run 0.5 `0x33851aa8...` (block 14496270) -> submit `0x7b6756ca...` -> `pass:true is_duplicate:false`.
+  - LEG2-FAIL: 1.5 STRK transfer `0x374424a5...` (block 14496303) -> submit `0x16474a55...` -> `pass:false is_duplicate:false` (threshold-fail via `pass_claim=false`).
+  - LEG3-DUP: 0.5 STRK transfer `0x24b36735...` (block 14496340) -> submit `0x684c7324...` -> `pass:false is_duplicate:true` (same `dup_commit 0x6207d3a8...` as LEG1 across different notes, different `audit_commitment` per-note salt — exactly per design).
+- No amount/counterparty in any event — only nullifier key + business + bools + opaque commitments. Verified via `get_result` on each nullifier.
+- Contract change required mid-stage: `pass` was `!is_duplicate` only, so a genuine threshold-fail recorded `pass:true` (proven by first attempt). Added 1-bit `pass_claim` param (`pass = pass_claim && !is_duplicate`; amount can never go on-chain, calldata is public) + `test_submit_proof_fail_claim_stored` (now 11/11 `snforge` green). Witness semantics fixed: commitments describe the AUDITED TRANSFER amount, binding (nullifier/note_id/enc) derives from the spent note.
+- Redeployed (2nd redeploy): registry `0x1ce7138415c267093450c95241c0a02e1e5cd1b4db52452149fa05f36d6ead6`, class `0x2aa91d96ca82f6186ac686e2427a146704f84ca75731980ecb4fe2c967baec4` (block 14496137), setup re-run (version 1, registered). `registry_setup.ts` + `stage5.ts` REGISTRY updated; `submit.ts`/`types.ts` carry `pass_claim`. Old registry `0x370a79c...` (2 artifact submits from the first attempt) superseded.
+- Bonus: LEG1 first-attempt nullifier `0x72c95b96...` matched `test-vectors/vector1.json` `computed_nullifier` exactly — Stage 3 math now chain-verified.
 
 ## Stage 4 gate: CLOSED (2026-09-03, WSL)
 - **snforge test all pass (10 tests)** — `cd contracts/src && snforge test` (toolchain: `scarb 2.20.1`, `snforge/sncast 0.63.0`, `snforge_std v0.63.0` pinned to match):
@@ -73,7 +83,17 @@ https://sepolia.voyager.online/tx/0x7f76a9d2225340c191421df08a1e029cbcdc2bbc9850
 https://sepolia.voyager.online/contract/0x370a79cda6910a14946ad9f4dda555a9920be715549ea658f80a9990ce2858d // new registry (business field + dup fix)
 https://sepolia.voyager.online/tx/0x3386db5e55aef02ef20df20c564710a99e4c8e07d966f35ca16f0cac031d1f0 // register_business open
 https://sepolia.voyager.online/tx/0x292264144db9bd30ff020ba6738ea4a0ecf3805172e45737b8644d6e79e2af0 // set_auditor business picks any
-https://sepolia.voyager.online/tx/0x32c32756813e39fac8acfcf192c2f8ac4f33e249084c31fd92f70dfc12282a // set_threshold v1
+https://sepolia.voyager.online/tx/0x32c32756813e39fac8acfcf192c2f8ac4f33e249084c31fd92f70dfc12282a // set_threshold v1 (2nd registry)
+https://sepolia.voyager.online/tx/0x4aa73302f3800883039e1c59b8d7af6e0c4a6b5ea9baff4b3cf25b34573b338 // declare 3rd registry (class 0x2aa91d96, pass_claim)
+https://sepolia.voyager.online/tx/0x7b1bf869f9f10bf6fa6e41e78c13f30a4e5e97d93c39101e1cd74fa93c7efe6 // deploy 0x1ce71384... block 14496137
+https://sepolia.voyager.online/contract/0x1ce7138415c267093450c95241c0a02e1e5cd1b4db52452149fa05f36d6ead6 // current registry (pass_claim)
+https://sepolia.voyager.online/tx/0x6d4dfcb17cebbb5e3eda8f3f88852c11a4d9118fb1cb4ae4734552762423cbd // set_threshold v1 (current)
+https://sepolia.voyager.online/tx/0x33851aa8d9f132ed8e9c4afe68465a9b3d8b50986b2fd0be80561cbba730a74 // stage5 leg1 transfer 0.5
+https://sepolia.voyager.online/tx/0x7b6756ca63e0c983fd28b3cb37bfc248f288dc64b8ebc2a39f8468a833aaa05 // submit pass:true
+https://sepolia.voyager.online/tx/0x374424a5f99d1c9047f9c51d556b339f0667c39d07d4f9e5d0c1389b651b5fc // stage5 leg2 transfer 1.5
+https://sepolia.voyager.online/tx/0x16474a55fe9cace50829e0c0ad4315e4525df3b6bb3e06ba502554d39cce643 // submit pass:false
+https://sepolia.voyager.online/tx/0x24b3673562f3cb7c76e2438b9ac61abd338e7c836e3e10bbf30c3fed1a003e8 // stage5 leg3 transfer 0.5
+https://sepolia.voyager.online/tx/0x684c7324814098ef07744b088c9141cce8f5350c856bba5b7269a018d3db709 // submit pass:false is_duplicate:true
 ```
 
 ## Repro

@@ -27,6 +27,7 @@ export interface ProofBundle {
   enc_amount: bigint
   proof: bigint[]       // Stwo proof bytes as felt252 array
   public_inputs: bigint[]
+  pass_claim: boolean   // submitter's 1-bit threshold verdict (amount never goes on-chain)
 }
 
 export interface AuditResult {
