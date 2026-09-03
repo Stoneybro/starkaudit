@@ -32,7 +32,13 @@
 
 
 ## Next
-Stage 7 Dashboard (`apps/web` auditor/business views over the Stage 5+6 events).
+Stage 8 Mainnet (after Sepolia clean) + Stage 9 video/README.
+
+## Stage 7 gate: PASSED (2026-09-03, WSL)
+- Minimal dashboard in `apps/web` (was a 4-file starter): `/` landing + wallet connect, `/auditor` live `ProofSubmitted` feed split fails/duplicates (+passes count, exceptions, offchain/unverified badges, Voyager links), `/business` registration + fee-balance + chosen auditor + own proofs (filtered by new `business` field). Data layer `src/lib/starknet.ts` + `registry.ts` (`getEvents` paging from deploy block, selector+shape parsing) + `useWallet` (get-starknet-core requestAccounts) + `useProofFeed`.
+- Styled after `web-ui` (dark-first oklch tokens, Geist, sidebar-less top nav, badge/card/skeleton/empty-state in its class language) but web-ui untouched — lightweight local primitives, no base-ui dep. No amount/counterparty fetched or rendered anywhere (only privacy statements mention the word).
+- `pnpm --filter web build` green (3 static routes); `lint` clean; served locally, all routes 200. Env in `apps/web/.env.local` (registry `0x1ce71384...`, deploy block, RPC — gitignored).
+- Gotchas: scripts-style CJS trap doesn't apply here (`type` inference fine); Next 16 type-check choked on a stale `tsconfig.tsbuildinfo` after the ES2017->ES2022 bump — deleting caches fixed it; `StarknetWindowObject` is request-based (no `.account`), address via `wallet_requestAccounts`.
 
 ## Stage 6 gate: PASSED (2026-09-03, WSL)
 - `PayrollAnonymizer.privacy_invoke` implemented for real: caller==pool guard, non-empty + ≤128 payees, per-deposit token check, `sum(amounts) <= balance` solvency (u256, no overflow), exact-total approve, echo deposits span. 17/17 `snforge` green (6 new payroll tests incl. shortfall revert + donation-doesn't-brick; real bug caught by tests: pre-invoke withdraw means no in-invoke delta exists, so single-balance `<=` replaced the muddled before/after reads).
