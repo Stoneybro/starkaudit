@@ -29,7 +29,7 @@ fn test_access_control_register_business() {
     start_cheat_caller_address(dispatcher.contract_address, AUDITOR());
     dispatcher.register_business_for(ATTACKER());
     stop_cheat_caller_address(dispatcher.contract_address);
-    assert(dispatcher.is_registered(ATTACKER()), 'attacker registered via auditor helper');
+    assert(dispatcher.is_registered(ATTACKER()), 'registered via auditor');
 }
 
 #[test]
@@ -72,17 +72,20 @@ fn test_submit_proof_store_and_emit() {
     let audit_commit = 0x333;
     let dup_commit = 0x444;
     let enc_amount = 0x555;
+    start_cheat_caller_address(dispatcher.contract_address, BUSINESS());
     dispatcher.submit_proof(nullifier, note_id, audit_commit, dup_commit, enc_amount, array![].span(), array![].span());
+    stop_cheat_caller_address(dispatcher.contract_address);
     // Check stored
     let res = dispatcher.get_result(nullifier);
+    assert(res.business == BUSINESS(), 'business mismatch');
     assert(res.note_id == note_id, 'note_id mismatch');
     assert(res.audit_commitment == audit_commit, 'audit_commit mismatch');
     assert(res.dup_commit == dup_commit, 'dup_commit mismatch');
-    assert(res.pass == true, 'pass should be true when not duplicate');
+    assert(res.pass == true, 'pass true if not duplicate');
     assert(res.is_duplicate == false, 'not duplicate');
     assert(res.offchain_verified == true, 'offchain fallback');
     // Check event
-    spy.assert_emitted(@array![(dispatcher.contract_address, shadowaudit::audit_registry::AuditRegistry::Event::ProofSubmitted(shadowaudit::audit_registry::ProofSubmitted { nullifier, pass: true, is_duplicate: false, unverified_binding: false, offchain_verified: true }))]);
+    spy.assert_emitted(@array![(dispatcher.contract_address, shadowaudit::audit_registry::AuditRegistry::Event::ProofSubmitted(shadowaudit::audit_registry::ProofSubmitted { nullifier, business: BUSINESS(), pass: true, is_duplicate: false, unverified_binding: false, offchain_verified: true }))]);
 }
 
 #[test]
@@ -121,6 +124,15 @@ fn test_duplicate_window_is_duplicate_true() {
     let res3 = dispatcher.get_result(0x3);
     assert(res3.is_duplicate == false, 'outside window not duplicate');
     stop_cheat_block_timestamp(addr);
+}
+
+#[test]
+#[should_panic(expected: ('NOT_AUDITOR',))]
+fn test_set_duplicate_window_not_auditor_reverts() {
+    let (_, dispatcher) = deploy_registry();
+    start_cheat_caller_address(dispatcher.contract_address, ATTACKER());
+    dispatcher.set_duplicate_window(100);
+    stop_cheat_caller_address(dispatcher.contract_address);
 }
 
 #[test]

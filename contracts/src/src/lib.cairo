@@ -1,3 +1,3 @@
-mod audit_registry;
+pub mod audit_registry;
 mod payroll_anonymizer;
 

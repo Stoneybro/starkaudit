@@ -32,7 +32,29 @@
 
 
 ## Next
-Stage 4 `AuditRegistry` `contracts/src/audit_registry.cairo` `snforge` + deploy Sepolia.
+Stage 5 Pass/Fail/Duplicate end-to-end (`submit_proof` via SDK witness, Voyager `ProofSubmitted pass:true/false/is_duplicate:true`, no amount in event).
+
+## Stage 4 gate: CLOSED (2026-09-03, WSL)
+- **snforge test all pass (10 tests)** — `cd contracts/src && snforge test` (toolchain: `scarb 2.20.1`, `snforge/sncast 0.63.0`, `snforge_std v0.63.0` pinned to match):
+```
+[PASS] test_access_control_register_business
+[PASS] test_register_business_for_not_auditor_reverts
+[PASS] test_threshold_versioning
+[PASS] test_set_threshold_not_auditor_reverts
+[PASS] test_submit_proof_store_and_emit
+[PASS] test_anti_replay_same_nullifier_reverts
+[PASS] test_duplicate_window_is_duplicate_true
+[PASS] test_flag_exception_not_auditor_reverts
+[PASS] test_flag_exception_auditor_succeeds
+[PASS] test_set_duplicate_window_not_auditor_reverts
+Tests: 10 passed, 0 failed
+```
+- `scarb build` -> `Finished`.
+- `ProofSubmitted` visibility proven by `test_submit_proof_store_and_emit` event assertion (exact struct incl. new `business` field). No on-chain `submit_proof` in Stage 4 by design — first real submission is Stage 5 (no fabricated pass pollution).
+- Fixes to get here: `snforge_std` uncommented+pinned to installed `v0.63.0` (commented `v0.39.0` was stale); `pub mod audit_registry` + `pub enum Event` (integration tests are a separate crate, need visibility — no codegen change); 2 over-long assert strings shortened to fit felt252; real bug found+fixed in contract: `dup_seen` used `first_seen != 0` sentinel which collides with block timestamp 0 -> replaced with `dup_seen_exists` guard.
+- Secondary batch (one redeploy): (a) `business: ContractAddress` (= submitter caller) added to `AuditResult` + `ProofSubmitted` (non-key field; caller address is public anyway, privacy holds); (b) DECISION: `submit_proof` stays permissionless — no access control added. Rationale: without a `business` param the contract cannot attribute proofs, and auditor-only would break judge fresh-wallet flows + the Stage 5 API. Accepted demo limitation: griefing/front-run `ALREADY_SUBMITTED` and fabricated `pass:true` are possible; auditor filters by `business` field off-chain. Recorded in contract docstring. (c) `set_auditor` comment aligned to demo-intentional open behavior. (d) `note_id` struct comment fixed (stored for Stage 5 binding check, `enc_amount` not stored yet). (e) `NOT_AUDITOR` test for `set_duplicate_window` added (10th test).
+- Redeployed (class hash changed as expected): registry `0x370a79cda6910a14946ad9f4dda555a9920be715549ea658f80a9990ce2858d`, class `0x1010d4ebdcca4227c1cc2f08fbd671a4bae8913d168bc3c4b132d3298964501` (from local `scarb build` artifacts), block `14495066`. `scripts/registry_setup.ts` REGISTRY updated. `register_business` + `set_auditor(self)` + `set_threshold_commitment` re-run: version 1, `is_registered true`. Old registry `0x53081a...` superseded.
+- Env notes (WSL): starkup needs interactive TTY so toolchain installed directly (`scarb` installer + `snfoundryup` + `rustup`); no system C linker/no sudo -> user-local gcc 15 sysroot (`~/gccroot`, `~/.local/bin/cc` wrapper) purely to compile `snforge_scarb_plugin` build scripts. GH Packages auth lives in user `~/.npmrc` (never committed).
 
 ## Verify
 ```
@@ -45,7 +67,13 @@ https://sepolia.voyager.online/tx/0x2e71bcf67e4dba3965401797b43114cb77781b904feb
 https://sepolia.voyager.online/contract/0x53081a78e70fd3e3b0190d871d621dd2f8189b72bf2a069c4f5c49567e6dec4 // new registry
 https://sepolia.voyager.online/tx/0x228385155ed9986ea15814227d74052bc6dc0da0ae22b2bcb8b63de31790af9 // register_business open
 https://sepolia.voyager.online/tx/0x35f24ce200c901a5415aa03818bd9efe9a23326d84fdfbfdd1e19f83938d01a // set_auditor business picks any
-https://sepolia.voyager.online/tx/0x4620f601f14403bd30e7d588418ce98ff3abce76e82ff01b5048335316ac169 // set_threshold
+https://sepolia.voyager.online/tx/0x4620f601f14403bd30e7d588418ce98ff3abce76e82ff01b5048335316ac169 // set_threshold (old registry)
+https://sepolia.voyager.online/tx/0x74cb6d75bf4427b78f611a0ef54cc49c56148ff9ebb205d039f1123d14f3e9e // declare new registry (class 0x1010d4e...)
+https://sepolia.voyager.online/tx/0x7f76a9d2225340c191421df08a1e029cbcdc2bbc9850d64efbf89b6c3661aec // deploy 0x370a79c... block 14495066
+https://sepolia.voyager.online/contract/0x370a79cda6910a14946ad9f4dda555a9920be715549ea658f80a9990ce2858d // new registry (business field + dup fix)
+https://sepolia.voyager.online/tx/0x3386db5e55aef02ef20df20c564710a99e4c8e07d966f35ca16f0cac031d1f0 // register_business open
+https://sepolia.voyager.online/tx/0x292264144db9bd30ff020ba6738ea4a0ecf3805172e45737b8644d6e79e2af0 // set_auditor business picks any
+https://sepolia.voyager.online/tx/0x32c32756813e39fac8acfcf192c2f8ac4f33e249084c31fd92f70dfc12282a // set_threshold v1
 ```
 
 ## Repro

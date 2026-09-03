@@ -8,7 +8,8 @@ use starknet::ContractAddress;
 
 #[derive(Drop, Serde, starknet::Store)]
 pub struct AuditResult {
-    pub note_id: felt252,           // public input; enables storage audit of enc_amount
+    pub business: ContractAddress,    // submitter (get_caller_address at submit time); Stage 5 callers submit for their own business
+    pub note_id: felt252,             // public input; stored for the Stage 5 verifier/binding check (enc_amount itself is not stored yet)
     pub audit_commitment: felt252,  // poseidon(PRIVATE_AUDIT_TAG, amount, salt, counterparty, period)
     pub dup_commit: felt252,        // poseidon(DUP_TAG, counterparty, amount, period) — no salt
     pub pass: bool,                 // false on threshold fail OR duplicate
@@ -24,6 +25,7 @@ pub struct AuditResult {
 pub struct ProofSubmitted {
     #[key]
     pub nullifier: felt252,
+    pub business: ContractAddress,
     pub pass: bool,
     pub is_duplicate: bool,
     pub unverified_binding: bool,
@@ -85,7 +87,7 @@ pub trait IAuditRegistry<T> {
 // ── Contract ──────────────────────────────────────────────────────────────────
 
 #[starknet::contract]
-mod AuditRegistry {
+pub mod AuditRegistry {
     use super::{AuditResult, IAuditRegistry, ProofSubmitted, ExceptionFlagged, ThresholdUpdated, BusinessRegistered, AuditorSet};
     use starknet::{ContractAddress, get_caller_address, get_block_timestamp};
     use starknet::storage::{Map, StoragePointerReadAccess, StoragePointerWriteAccess, StoragePathEntry};
@@ -101,13 +103,14 @@ mod AuditRegistry {
         results: Map<felt252, AuditResult>,    // nullifier → AuditResult
         result_exists: Map<felt252, bool>,     // anti-replay guard
         dup_seen: Map<felt252, u64>,           // dup_commit → timestamp first seen
+        dup_seen_exists: Map<felt252, bool>,   // dup_commit → ever seen (timestamp 0 is valid, so 0 is no sentinel)
         // [DECIDE] verifier address — set in constructor once §4 verifier is confirmed.
         // verifier: ContractAddress,
     }
 
     #[event]
     #[derive(Drop, starknet::Event)]
-    enum Event {
+    pub enum Event {
         ProofSubmitted: ProofSubmitted,
         ExceptionFlagged: ExceptionFlagged,
         ThresholdUpdated: ThresholdUpdated,
@@ -139,11 +142,11 @@ mod AuditRegistry {
             self.emit(BusinessRegistered { business: addr });
         }
 
-        /// Business sets its chosen auditor — demo: any address, judges can be added.
+        /// Business sets its chosen auditor — demo-intentional open behavior:
+        /// any caller may set auditor_of[caller]. No registration check on purpose,
+        /// so judges can test with fresh wallets without a pre-registration step.
         fn set_auditor(ref self: ContractState, auditor: ContractAddress) {
             let caller = get_caller_address();
-            // Must be registered business (or allow any caller to set for demo)
-            // For demo, allow any caller to set — judges will test with fresh wallets
             self.auditor_of.entry(caller).write(auditor);
             self.emit(AuditorSet { business: caller, auditor });
         }
@@ -165,6 +168,10 @@ mod AuditRegistry {
         }
 
         /// Submit an audit proof for a nullifier.
+        /// Permissionless by design (demo): anyone may submit for any nullifier.
+        /// Accepted limitation — griefing/front-run ALREADY_SUBMITTED and fabricated
+        /// pass are possible; Stage 5 callers submit for their own business and the
+        /// auditor filters by the `business` field. See report.md Stage 4 notes.
         /// Steps:
         ///   0. Anti-replay — one result per nullifier
         ///   1. Storage check — enc_amount vs pool payload (offchain_verified if no pool view)
@@ -199,9 +206,11 @@ mod AuditRegistry {
             let now = get_block_timestamp();
             let window = self.duplicate_window.read();
             let first_seen = self.dup_seen.entry(dup_commit).read();
-            let is_duplicate = first_seen != 0 && (now - first_seen) <= window;
-            if !is_duplicate {
+            let seen_before = self.dup_seen_exists.entry(dup_commit).read();
+            let is_duplicate = seen_before && (now - first_seen) <= window;
+            if !seen_before {
                 self.dup_seen.entry(dup_commit).write(now);
+                self.dup_seen_exists.entry(dup_commit).write(true);
             }
 
             // pass = true only if proof verifies (currently deferred) AND not duplicate
@@ -209,7 +218,9 @@ mod AuditRegistry {
             let pass = !is_duplicate; // [UPDATE] once verifier is wired
 
             // Step 4: store + emit
+            let business = get_caller_address();
             let result = AuditResult {
+                business,
                 note_id,
                 audit_commitment,
                 dup_commit,
@@ -221,7 +232,7 @@ mod AuditRegistry {
             };
             self.results.entry(nullifier).write(result);
             self.result_exists.entry(nullifier).write(true);
-            self.emit(ProofSubmitted { nullifier, pass, is_duplicate, unverified_binding: false, offchain_verified });
+            self.emit(ProofSubmitted { nullifier, business, pass, is_duplicate, unverified_binding: false, offchain_verified });
         }
 
         /// Flag an exception for a nullifier (auditor-only, manual for sprint).
