@@ -87,7 +87,7 @@ Storage `businesses:Map<addr,bool> auditor threshold_commitment threshold_versio
 
 `AuditResult { note_id, audit_commitment, dup_commit, pass, unverified_binding, offchain_verified, submitted_at, is_duplicate }`
 
-`register_business(addr)` auditor-only, `set_threshold_commitment(hash)` versioned, `submit_proof(nullifier,note_id,audit_commitment,dup_commit,enc_amount,proof)`:
+`register_business()` open (any wallet self-registers), `set_auditor(auditor)` business-only (caller sets `auditor_of[caller]=auditor` — demo: business picks any auditor to get pass/fail), `register_business_for(addr)` auditor helper, `set_threshold_commitment(hash)` auditor-only (global, demo) versioned, `submit_proof(nullifier,note_id,audit_commitment,dup_commit,enc_amount,proof)`:
 0 `!results.contains(nullifier)` 1 storage check (`pool.view` if exists else `offchain=true`) 2 verifier or store 3 `dup_seen` window -> `is_duplicate` overrides `pass` 4 `emit ProofSubmitted(nullifier,pass,is_duplicate,unverified_binding,offchain_verified)`
 
 `flag_exception(nullifier)` manual - nullifiers unlinkable without `k`.

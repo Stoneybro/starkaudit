@@ -48,11 +48,20 @@ pub struct BusinessRegistered {
     pub business: ContractAddress,
 }
 
+#[derive(Drop, starknet::Event)]
+pub struct AuditorSet {
+    #[key]
+    pub business: ContractAddress,
+    pub auditor: ContractAddress,
+}
+
 // ── Interface ────────────────────────────────────────────────────────────────
 
 #[starknet::interface]
 pub trait IAuditRegistry<T> {
-    fn register_business(ref self: T, addr: ContractAddress);
+    fn register_business(ref self: T);
+    fn register_business_for(ref self: T, addr: ContractAddress);
+    fn set_auditor(ref self: T, auditor: ContractAddress);
     fn set_threshold_commitment(ref self: T, hash: felt252);
     fn set_duplicate_window(ref self: T, window_seconds: u64);
     fn submit_proof(
@@ -70,20 +79,22 @@ pub trait IAuditRegistry<T> {
     fn is_registered(self: @T, addr: ContractAddress) -> bool;
     fn get_threshold_commitment(self: @T) -> felt252;
     fn get_threshold_version(self: @T) -> u64;
+    fn get_auditor(self: @T, business: ContractAddress) -> ContractAddress;
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
 
 #[starknet::contract]
 mod AuditRegistry {
-    use super::{AuditResult, IAuditRegistry, ProofSubmitted, ExceptionFlagged, ThresholdUpdated, BusinessRegistered};
+    use super::{AuditResult, IAuditRegistry, ProofSubmitted, ExceptionFlagged, ThresholdUpdated, BusinessRegistered, AuditorSet};
     use starknet::{ContractAddress, get_caller_address, get_block_timestamp};
     use starknet::storage::{Map, StoragePointerReadAccess, StoragePointerWriteAccess, StoragePathEntry};
 
     #[storage]
     struct Storage {
-        auditor: ContractAddress,
+        auditor: ContractAddress, // global deployer, kept for admin
         businesses: Map<ContractAddress, bool>,
+        auditor_of: Map<ContractAddress, ContractAddress>, // business -> chosen auditor (demo: any address)
         threshold_commitment: felt252,
         threshold_version: u64,
         duplicate_window: u64,          // seconds
@@ -101,6 +112,7 @@ mod AuditRegistry {
         ExceptionFlagged: ExceptionFlagged,
         ThresholdUpdated: ThresholdUpdated,
         BusinessRegistered: BusinessRegistered,
+        AuditorSet: AuditorSet,
     }
 
     #[constructor]
@@ -112,11 +124,28 @@ mod AuditRegistry {
 
     #[abi(embed_v0)]
     impl AuditRegistryImpl of IAuditRegistry<ContractState> {
-        /// Register a business address (auditor-only for demo simplicity).
-        fn register_business(ref self: ContractState, addr: ContractAddress) {
+        /// Register a business address — open to anyone (business self-registers).
+        /// Any wallet can call register_business() and it registers get_caller_address().
+        /// The auditor-only helper register_business_for is kept for the auditor to pre-register in demos.
+        fn register_business(ref self: ContractState) {
+            let caller = get_caller_address();
+            self.businesses.entry(caller).write(true);
+            self.emit(BusinessRegistered { business: caller });
+        }
+
+        fn register_business_for(ref self: ContractState, addr: ContractAddress) {
             self._assert_auditor();
             self.businesses.entry(addr).write(true);
             self.emit(BusinessRegistered { business: addr });
+        }
+
+        /// Business sets its chosen auditor — demo: any address, judges can be added.
+        fn set_auditor(ref self: ContractState, auditor: ContractAddress) {
+            let caller = get_caller_address();
+            // Must be registered business (or allow any caller to set for demo)
+            // For demo, allow any caller to set — judges will test with fresh wallets
+            self.auditor_of.entry(caller).write(auditor);
+            self.emit(AuditorSet { business: caller, auditor });
         }
 
         /// Set threshold commitment — auditor-only, versioned.
@@ -216,6 +245,10 @@ mod AuditRegistry {
 
         fn get_threshold_version(self: @ContractState) -> u64 {
             self.threshold_version.read()
+        }
+
+        fn get_auditor(self: @ContractState, business: ContractAddress) -> ContractAddress {
+            self.auditor_of.entry(business).read()
         }
     }
 

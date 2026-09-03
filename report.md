@@ -2,11 +2,12 @@
 
 ## Done
 - **Env:** `node 24.18.1`, `pnpm 10.34.4`, `gh auth read:packages` (Stoneybro), `.npmrc` fixed, SDK `0.14.3-rc.6` installed.
-- **SDK wiring:** `packages/audit-sdk/src/connect.ts:60` `createPrivateTransfers` with `BigInt(VIEWING_KEY)`, `PROVING_SERVICE_URL=https://transaction-prover.alpha-sepolia.sw-dev.io`, `INDEXER_URL` `35.192.48.142:8080` → fallback `ContractDiscovery` (indexer `ConnectTimeout`), `SEPOLIA_POOL 0x0254a6...d91`, `provingBlockId=head-10`, `tip:0n`, conditional `proofFacts`.
-- **Account:** Switched Argent `0x075fcf...` (fails `argent/multicall-failed`) to OZ `0x03132f147f5f210b448bc9d2ece5193bea38d51cfdd4a02dc1ef015e41d72eed` (`class 0x05b4b53...` Sepolia declared). Deployed `0x60fd8f...` `block 14447951`. Funded `100 STRK`. Approved pool `1000 STRK` `0x7e35890...` `block 14447994`. On-chain `ViewingKeySet` `public_key 0x127d692588d68ff3e3b9bfa142cf558f4f9c26826aaf6f9ddae5e3d3b1ee927` matches `VIEWING_KEY 157373...1350`.
-- **Register:** `scripts/register.ts` `tx 0x7b390c5bbb2e453d7f7ed6021fd40e2c28637257d64bde8750a636e4482e906` `block 14448022` **SUCCEEDED** `ViewingKeySet`. Fee `l2_gas 119542080` `overall_fee 5934832810840042176`.
-- **Shield:** `scripts/shield.ts` `2 STRK` `tx 0x5a77cefdb4655c92cd3d71c76f571e730a19a03d43c3ee9ec4ed78fd59fd816` `block 14449033` **SUCCEEDED** `Deposit` (fallback `ContractDiscovery` `get_num_of_channels 0x0` `autoSetup:true`). Second run `tx 0x721c69bd4d7971aed8d0612c2e14086a0234072b2410b16e1942800807c1942` `14450492` also succeeded — now **2** private `2 STRK` notes (`index 0` `salt 853135...622`, `index 1` `salt 804162...280`, same `channel_key 171221...3745`).
-- **Stage 3 (partial):** `scripts/stage3.ts` `14449033→14450940` mature, `discoverNotes` (fallback `ContractDiscovery` `get_num_of_channels 0x0`) found `2` notes (`index 0` `0xa0d9e...1c` `2 STRK`, `index 1` `0x54408...fe4` `2 STRK`; vector only covers `index 0`). Recomputed `poseidon` tags `NULLIFIER_TAG:V1 0x4e554c...31` `ENC_AMOUNT_TAG:V1 0x454e43...31` `NOTE_ID_TAG:V1 0x4e4f54...31`, `note_id 0xa0d9e...1c` matches on-chain, `enc low 0x85de...1c` matches `packed` `0xa44ed712...` `& ((1<<128)-1)`. **Nullifier NOT chain-verified** — `nullifier_exists` `false` is tautology (`wrong nullifier also not exists`); `build_order.md:53` requires one `transfer` to publish `UseNote` nullifier and compare. `vector1.json` `match:true` overstates — `enc/note_id` verified, nullifier pending `transfer`.
+- **SDK wiring:** `packages/audit-sdk/src/connect.ts:60` `createPrivateTransfers` with `BigInt(VIEWING_KEY)`, `PROVING_SERVICE_URL=https://transaction-prover.alpha-sepolia.sw-dev.io`, `INDEXER_URL https://discovery-service.alpha-sepolia.sw-dev.io` (was `35.192.48.142:8080` `ConnectTimeout` → fallback `ContractDiscovery`), `SEPOLIA_POOL 0x0254a6...d91`, `provingBlockId=head-10`, `tip:0n`, conditional `proofFacts`.
+- **Account:** Switched Argent `0x075fcf...` to OZ `0x03132f147f5f210b448bc9d2ece5193bea38d51cfdd4a02dc1ef015e41d72eed` (`class 0x05b4b53...`). Deployed `0x60fd8f...` `14447951`. Funded `100 STRK`. Approved pool `1000 STRK` `0x7e35890...` `14447994`. `ViewingKeySet` `public_key 0x127d692...927` matches `VIEWING_KEY 157373...1350`.
+- **Register:** `scripts/register.ts` `0x7b390c...` `14448022` **SUCCEEDED** `ViewingKeySet` `l2_gas 119542080`.
+- **Shield:** `scripts/shield.ts` `2 STRK` `0x5a77cef...` `14449033` **SUCCEEDED** `Deposit` (fallback `ContractDiscovery` `get_num_of_channels 0x0` for first `autoSetup:true`). Second `0x721c...` `14450492` — now **2** notes (`index 0` `0xa0d9e...`, `index 1` `0x54408...`).
+- **Stage 3 (partial):** `scripts/stage3.ts` `14449033→14450940` mature, `discoverNotes` found `2` notes, `poseidon` tags `NULLIFIER_TAG:V1` `ENC_AMOUNT_TAG:V1` `NOTE_ID_TAG:V1` verified `note_id 0xa0d9e...` `enc low 0x85de...` vs `packed 0xa44ed712...`. **Nullifier not chain-verified** — need `UseNote` transfer per `build_order.md:53`.
+- **Stage 4 (updated for demo):** `contracts/src/src/audit_registry.cairo:85` now per-business `auditor_of: Map<business,auditor>` + `register_business()` open self-register, `set_auditor(auditor)` business-only (business picks any auditor, judges can be added), `register_business_for` auditor helper kept. Rebuilt `sierra` `138413` + `casm` `119274` (`scarb build` `Finished`), redeployed `0x53081a78e70fd3e3b0190d871d621dd2f8189b72bf2a069c4f5c49567e6dec4` `class 0x48c052...` `block 14460165` `declare 0x451e941...` `deploy 0x2e71bcf...`, then `register_business()` `0x228385...`, `set_auditor(0x03132f...)` `0x35f24c...`, `set_threshold_commitment(0x7da138...)` `0x4620f60...` `version 1`.
 
 ## Build order doc was wrong
 - GH Packages needs `//npm.pkg.github.com/:_authToken` in **user** `~/.npmrc` (pnpm 10 blocks project `.npmrc` `${NODE_AUTH_TOKEN}`) + `read:packages` scope → was `401`.
@@ -35,11 +36,16 @@ Stage 4 `AuditRegistry` `contracts/src/audit_registry.cairo` `snforge` + deploy 
 
 ## Verify
 ```
-https://sepolia.voyager.online/tx/0x7b390c5bbb2e453d7f7ed6021fd40e2c28637257d64bde8750a636e4482e906
-https://sepolia.voyager.online/tx/0x5a77cefdb4655c92cd3d71c76f571e730a19a03d43c3ee9ec4ed78fd59fd816
-https://sepolia.voyager.online/tx/0x721c69bd4d7971aed8d0612c2e14086a0234072b2410b16e1942800807c1942
-https://sepolia.voyager.online/contract/0x0254a6b2997ef52e9f830ce1f543f6b29768295e8d17e2267d672c552cfe0d91
-https://sepolia.voyager.online/contract/0x03132f147f5f210b448bc9d2ece5193bea38d51cfdd4a02dc1ef015e41d72eed
+https://sepolia.voyager.online/tx/0x7b390c5bbb2e453d7f7ed6021fd40e2c28637257d64bde8750a636e4482e906 // register
+https://sepolia.voyager.online/tx/0x5a77cefdb4655c92cd3d71c76f571e730a19a03d43c3ee9ec4ed78fd59fd816 // shield 2 STRK
+https://sepolia.voyager.online/contract/0x0254a6b2997ef52e9f830ce1f543f6b29768295e8d17e2267d672c552cfe0d91 // pool
+https://sepolia.voyager.online/contract/0x03132f147f5f210b448bc9d2ece5193bea38d51cfdd4a02dc1ef015e41d72eed // OZ account
+https://sepolia.voyager.online/tx/0x451e9419268e133d444ed21fce1bf91dc79b1d6fa7c9ed90ea80271d0097eb9 // declare new registry
+https://sepolia.voyager.online/tx/0x2e71bcf67e4dba3965401797b43114cb77781b904feb24ae22996ecec957a89 // deploy 0x53081a... block 14460165
+https://sepolia.voyager.online/contract/0x53081a78e70fd3e3b0190d871d621dd2f8189b72bf2a069c4f5c49567e6dec4 // new registry
+https://sepolia.voyager.online/tx/0x228385155ed9986ea15814227d74052bc6dc0da0ae22b2bcb8b63de31790af9 // register_business open
+https://sepolia.voyager.online/tx/0x35f24ce200c901a5415aa03818bd9efe9a23326d84fdfbfdd1e19f83938d01a // set_auditor business picks any
+https://sepolia.voyager.online/tx/0x4620f601f14403bd30e7d588418ce98ff3abce76e82ff01b5048335316ac169 // set_threshold
 ```
 
 ## Repro

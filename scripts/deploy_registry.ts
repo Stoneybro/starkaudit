@@ -13,7 +13,7 @@ async function main() {
   const sierraPath = "contracts/target/dev/shadowaudit_AuditRegistry.contract_class.json"
   const casmPath = "contracts/target/dev/shadowaudit_AuditRegistry.compiled_contract_class.json"
   const sierra = JSON.parse(fs.readFileSync(sierraPath, "utf-8"))
-  const casm = fs.existsSync(casmPath) ? JSON.parse(fs.readFileSync(casmPath, "utf-8")) : undefined
+  const casm = JSON.parse(fs.readFileSync(casmPath, "utf-8"))
 
   console.log("Declaring AuditRegistry...")
   const declareTx: any = await account.declare({ contract: sierra, casm }, { tip: 0n })

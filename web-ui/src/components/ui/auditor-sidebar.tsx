@@ -1,0 +1,213 @@
+"use client";
+
+import * as React from "react";
+import { useRouter } from "next/navigation";
+import {
+  LogOut,
+  FileSearchCorner,
+  BarChart2,
+  CreditCard,
+  ShieldAlert,
+} from "lucide-react";
+import Image from "next/image";
+import { truncateAddress } from "@/utils/format";
+import CopyText from "@/components/ui/copy";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarHeader,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+} from "@/components/ui/sidebar";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { toast } from "sonner";
+import { MOCK_WALLET } from "@/lib/mock";
+
+export type AuditorAppView = "tests" | "findings" | "analytics" | "payments";
+
+const ALL_NAV_ITEMS: {
+  id: AuditorAppView;
+  title: string;
+  icon: React.ElementType;
+  minAccessLevel: number;
+}[] = [
+  { id: "tests",     title: "Tests",     icon: ShieldAlert,       minAccessLevel: 2 },
+  { id: "findings",  title: "Findings",  icon: FileSearchCorner,  minAccessLevel: 2 },
+  { id: "analytics", title: "Analytics", icon: BarChart2,         minAccessLevel: 2 },
+  { id: "payments",  title: "Payments",  icon: CreditCard,        minAccessLevel: 3 },
+];
+
+type AuditorSidebarProps = {
+  walletAddress?: string;
+  activeView: AuditorAppView;
+  accessLevel?: number;
+  onNavigate: (view: AuditorAppView) => void;
+  isLocked?: boolean;
+  onBeforeDisconnect?: () => void;
+} & React.ComponentProps<typeof Sidebar>;
+
+export function AuditorSidebar({
+  walletAddress,
+  activeView,
+  accessLevel = 0,
+  onNavigate,
+  isLocked = false,
+  onBeforeDisconnect,
+  ...props
+}: AuditorSidebarProps) {
+  const router = useRouter();
+  const actualWalletAddress = walletAddress || MOCK_WALLET;
+
+  const [logoutOpen, setLogoutOpen] = React.useState(false);
+
+  const handleDisconnect = () => {
+    onBeforeDisconnect?.();
+    toast("Logged out (mock)");
+    setLogoutOpen(false);
+  };
+
+  const visibleNavItems = ALL_NAV_ITEMS.filter(
+    (item) => !isLocked && accessLevel >= item.minAccessLevel
+  );
+
+  return (
+    <Sidebar collapsible="icon" {...props}>
+      <SidebarHeader>
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              className="md:h-12 md:p-0 hover:bg-transparent active:bg-transparent"
+              onClick={() => router.push("/")}
+              tooltip="Go home"
+            >
+              <div className="flex aspect-square size-6 items-center justify-center shrink-0">
+                <Image
+                  src="/complyrlogo-light.svg"
+                  alt="Complyr"
+                  width={32}
+                  height={32}
+                  className="h-5 w-auto"
+                />
+              </div>
+              <span className="font-bold text-lg truncate">
+                Complyr Auditor
+              </span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
+      </SidebarHeader>
+
+      <SidebarContent>
+        <SidebarGroup>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {actualWalletAddress && (
+                <SidebarMenuItem className="mb-6">
+                  <div className="flex flex-col rounded-xl border border-border bg-card overflow-hidden shadow-sm group-data-[collapsible=icon]:hidden">
+                    <div className="flex flex-col px-4 py-3 bg-muted/20">
+                      <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1">
+                        Access Tier
+                      </span>
+                      <span className="text-sm font-medium text-foreground">
+                        {accessLevel >= 3 ? "Full Access" : accessLevel >= 1 ? "Analytics Access" : "No Access"}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between px-4 py-2.5 border-t border-border bg-muted/40">
+                      <span className="text-sm font-mono text-muted-foreground">
+                        {truncateAddress(actualWalletAddress)}
+                      </span>
+                      <CopyText text={actualWalletAddress} />
+                    </div>
+                  </div>
+                </SidebarMenuItem>
+              )}
+
+              {isLocked
+                ? ALL_NAV_ITEMS.map((item) => (
+                    <SidebarMenuItem key={item.id}>
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger className="cursor-not-allowed w-full" render={<span />}>
+                            <SidebarMenuButton
+                              className="gap-3 py-5 mt-1 rounded w-full opacity-40 pointer-events-none select-none"
+                              aria-disabled={true}
+                            >
+                              <item.icon className="shrink-0" />
+                              <span>{item.title}</span>
+                            </SidebarMenuButton>
+                          </TooltipTrigger>
+                          <TooltipContent side="right">
+                            <p className="text-xs">Connect to unlock</p>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    </SidebarMenuItem>
+                  ))
+                : visibleNavItems.map((item) => (
+                    <SidebarMenuItem key={item.id}>
+                      <SidebarMenuButton
+                        isActive={activeView === item.id}
+                        onClick={() => onNavigate(item.id)}
+                        tooltip={item.title}
+                        className="gap-3 py-5 mt-1 rounded transition-opacity w-full"
+                      >
+                        <item.icon className="shrink-0" />
+                        <span>{item.title}</span>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  ))}
+
+              {actualWalletAddress && (
+                <SidebarMenuItem className="mt-4">
+                  <AlertDialog open={logoutOpen} onOpenChange={setLogoutOpen}>
+                    <AlertDialogTrigger
+                      render={
+                        <SidebarMenuButton className="gap-3 py-5 rounded transition-all w-full text-destructive hover:text-destructive hover:bg-destructive/10" />
+                      }
+                    >
+                      <LogOut className="shrink-0" />
+                      <span>Log Out (mock)</span>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>Log out (mock)?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          This is a UI-only replica.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction onClick={handleDisconnect} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+                          Log out
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                </SidebarMenuItem>
+              )}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+      </SidebarContent>
+    </Sidebar>
+  );
+}

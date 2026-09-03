@@ -63,7 +63,7 @@ Gate: `computed==onchain` both fields. If false -> fix tags; if still false by E
 
 ## Stage 4 — AuditRegistry (P0)
 
-`contracts/src/audit_registry.cairo` storage `businesses,auditor,threshold_commitment,threshold_version,duplicate_window,results:Map<nullifier>,dup_seen:Map<dup_commit>` `AuditResult{note_id,audit_commitment,dup_commit,pass,unverified_binding,offchain_verified,submitted_at,is_duplicate}` functions `register_business, set_threshold_commitment, submit_proof(nullifier,note_id,audit_commitment,dup_commit,enc_amount,proof), flag_exception` events `ProofSubmitted,ExceptionFlagged,ThresholdUpdated`. For now `submit_proof` stores with `offchain_verified=true` (no on-chain verifier) - pre-authorized fallback §4.
+`contracts/src/audit_registry.cairo` storage `businesses,auditor,threshold_commitment/version,duplicate_window,results:Map<nullifier>,dup_seen, auditor_of:Map<business,auditor>` `AuditResult{... business}` functions `register_business()` open, `set_auditor(auditor)` business-only, `register_business_for` auditor helper, `set_threshold_commitment` (global demo), `submit_proof`, `flag_exception` events `ProofSubmitted(business),BusinessRegistered,AuditorSet`. For now `submit_proof` `offchain_verified=true`.
 
 `snforge` tests: access control, versioning, `submit_proof` store, duplicate `dup_commit` window -> `is_duplicate=true`, anti-replay same `nullifier` -> revert. Deploy Sepolia `sncast deploy --constructor auditor`, call `register_business` + `set_threshold_commitment` -> Voyager events.
 

@@ -15,29 +15,29 @@ fn deploy_registry() -> (ContractAddress, IAuditRegistryDispatcher) {
 #[test]
 fn test_access_control_register_business() {
     let (_, dispatcher) = deploy_registry();
-    // Attacker cannot register
-    start_cheat_caller_address(dispatcher.contract_address, ATTACKER());
-    let mut panicked = false;
-    // snforge: expect panic with 'NOT_AUDITOR'
-    // Use try to catch panic via should_panic attribute would be better, but we test via raw call
-    // For now, test that attacker call reverts
-    // We use a helper: if it doesn't panic, we fail
-    // This test will be marked as should_panic externally
-    // Instead, test happy path for auditor and check business is_registered
-    stop_cheat_caller_address(dispatcher.contract_address);
-    // Auditor can register
-    start_cheat_caller_address(dispatcher.contract_address, AUDITOR());
-    dispatcher.register_business(BUSINESS());
+    // Anyone can self-register (open)
+    start_cheat_caller_address(dispatcher.contract_address, BUSINESS());
+    dispatcher.register_business();
     stop_cheat_caller_address(dispatcher.contract_address);
     assert(dispatcher.is_registered(BUSINESS()), 'business should be registered');
+    // Auditor can also self-register via same open path
+    start_cheat_caller_address(dispatcher.contract_address, AUDITOR());
+    dispatcher.register_business();
+    stop_cheat_caller_address(dispatcher.contract_address);
+    assert(dispatcher.is_registered(AUDITOR()), 'auditor self-registered');
+    // Auditor helper can register for another address
+    start_cheat_caller_address(dispatcher.contract_address, AUDITOR());
+    dispatcher.register_business_for(ATTACKER());
+    stop_cheat_caller_address(dispatcher.contract_address);
+    assert(dispatcher.is_registered(ATTACKER()), 'attacker registered via auditor helper');
 }
 
 #[test]
 #[should_panic(expected: ('NOT_AUDITOR',))]
-fn test_register_business_not_auditor_reverts() {
+fn test_register_business_for_not_auditor_reverts() {
     let (_, dispatcher) = deploy_registry();
     start_cheat_caller_address(dispatcher.contract_address, ATTACKER());
-    dispatcher.register_business(BUSINESS());
+    dispatcher.register_business_for(BUSINESS());
     stop_cheat_caller_address(dispatcher.contract_address);
 }
 
