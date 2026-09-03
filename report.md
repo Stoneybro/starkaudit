@@ -32,7 +32,14 @@
 
 
 ## Next
-Stage 6 PayrollAnonymizer (`contracts/src/src/payroll_anonymizer.cairo` `TODO` distribution + `snforge` ABI test + Sepolia invoke).
+Stage 7 Dashboard (`apps/web` auditor/business views over the Stage 5+6 events).
+
+## Stage 6 gate: PASSED (2026-09-03, WSL)
+- `PayrollAnonymizer.privacy_invoke` implemented for real: caller==pool guard, non-empty + ≤128 payees, per-deposit token check, `sum(amounts) <= balance` solvency (u256, no overflow), exact-total approve, echo deposits span. 17/17 `snforge` green (6 new payroll tests incl. shortfall revert + donation-doesn't-brick; real bug caught by tests: pre-invoke withdraw means no in-invoke delta exists, so single-balance `<=` replaced the muddled before/after reads).
+- Test-only `MockERC20` added (`contracts/src/src/mock_erc20.cairo`, never deployed on-chain).
+- Deployed: payroll `0x48a2b7e6566a915e34bea7a285212df5463a95a5900bd522575197191c25068`, class `0x14b998a99004c367243471633e58e9bd42de7bfd781cf056cb531b9769ca77b` (block 14496872, ctor pool+STRK).
+- Batch invoke `0x1ae70fe8...` (block 14497181) **SUCCEEDED**: 0.5 STRK private note -> withdraw to helper + 2 open notes (payee=self, single-account demo) -> helper split 0.3/0.2, pool credited both open notes with exact public amounts, helper balance 0 after pull.
+- Client notes: SDK `invoke(({openNotes}) => ...)` with `transfer({recipient, amount: Open})` x2; `Open` re-exported via `audit-sdk/connect.ts` (scripts/ are CJS-classified, SDK root has no `default` export condition — direct import throws `ERR_PACKAGE_PATH_NOT_EXPORTED`); Alchemy Sepolia flaps ~25% empty bodies, `scripts/payroll.ts` retries direct RPC calls.
 
 ## Stage 5 gate: PASSED (2026-09-03, WSL)
 - Three self-transfers (payee=self, counterparty=`poseidon([account])`, period=`20260903`, threshold 1 STRK) + `submit_proof` each, all nullifiers chain-verified via pool `nullifier_exists` before submit:
@@ -94,6 +101,10 @@ https://sepolia.voyager.online/tx/0x374424a5f99d1c9047f9c51d556b339f0667c39d07d4
 https://sepolia.voyager.online/tx/0x16474a55fe9cace50829e0c0ad4315e4525df3b6bb3e06ba502554d39cce643 // submit pass:false
 https://sepolia.voyager.online/tx/0x24b3673562f3cb7c76e2438b9ac61abd338e7c836e3e10bbf30c3fed1a003e8 // stage5 leg3 transfer 0.5
 https://sepolia.voyager.online/tx/0x684c7324814098ef07744b088c9141cce8f5350c856bba5b7269a018d3db709 // submit pass:false is_duplicate:true
+https://sepolia.voyager.online/tx/0x2ebcb608ac9a941161bd1b2d8b95fab2ab77872a6fd42b95027926ff6a7d44b // declare payroll (class 0x14b998a9)
+https://sepolia.voyager.online/tx/0x3683754c050a22be071925beebd6cffeb10322d8ff49e635ef2cbdd2cb893f1 // deploy payroll block 14496872
+https://sepolia.voyager.online/contract/0x48a2b7e6566a915e34bea7a285212df5463a95a5900bd522575197191c25068 // payroll anonymizer
+https://sepolia.voyager.online/tx/0x1ae70fe852a8c61dd27c48919c66532d2d73482cfb97ff83d232aa29baefe19 // payroll batch invoke 0.3+0.2 open notes
 ```
 
 ## Repro

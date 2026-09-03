@@ -58,6 +58,14 @@ mod PayrollAnonymizer {
 
     #[abi(embed_v0)]
     impl PayrollAnonymizerImpl of IPayrollAnonymizer<ContractState> {
+        /// Split the pool's input across the client-provided open notes.
+        /// The client builds `deposits` (one entry per payee open note) and the
+        /// pool funds this contract via `withdraw` before calling us, so we
+        /// require sum(deposits.amounts) <= our balance: we can never credit
+        /// more than we hold (no minting), while stray donations can't brick
+        /// a run — only the exact total is approved and pulled. Amounts are
+        /// public (open-note salt=1 by design); funder and payee identities
+        /// stay hidden behind the pool.
         fn privacy_invoke(
             ref self: ContractState,
             deposits: Span<OpenNoteDeposit>,
@@ -66,41 +74,32 @@ mod PayrollAnonymizer {
             assert(get_caller_address() == self.pool.read(), 'CALLER_NOT_PRIVACY');
 
             // Validate input
-            assert(deposits.len() > 0, 'EMPTY_DEPOSITS');
+            let n = deposits.len();
+            assert(n > 0, 'EMPTY_DEPOSITS');
+            assert(n <= 128, 'TOO_MANY_PAYEES'); // demo bound — one tx must fit block gas
 
             let token_addr = self.token.read();
             let erc20 = IERC20Dispatcher { contract_address: token_addr };
             let me = get_contract_address();
 
-            // Balance-delta pattern:
-            // Record balance before distributing, measure after.
-            // Credit exactly what arrived — not a hardcoded amount.
-            let balance_before: u256 = erc20.balance_of(me);
-
-            // TODO: distribute tokens to payees.
-            // The client encodes recipient addresses as part of the calldata alongside
-            // the deposits list. Decode them here and transfer each payee's share.
-            // For the hackathon demo this is implemented in the seed script.
-
-            let balance_after: u256 = erc20.balance_of(me);
-
-            // u256 -> u128 safety check
-            let delta = balance_after - balance_before;
-            assert(delta.high == 0, 'AMOUNT_OVERFLOW');
+            // Solvency: every deposit names our token and the total never
+            // exceeds what the pool funded us with (u256 accumulator, no overflow).
+            let mut total: u256 = 0.into();
+            let mut i: u32 = 0;
+            loop {
+                if i >= n {
+                    break;
+                }
+                let d = *deposits.at(i);
+                assert(d.token == token_addr, 'TOKEN_MISMATCH');
+                total += d.amount.into();
+                i += 1;
+            };
+            assert(total <= erc20.balance_of(me), 'INSUFFICIENT_INPUT');
 
             // Approve the pool to pull the output tokens back
             // (pool executes the pull when applying deposits — do NOT transfer)
-            let total: u128 = {
-                let mut sum: u128 = 0;
-                let mut i: u32 = 0;
-                loop {
-                    if i >= deposits.len() { break; }
-                    sum += (*deposits.at(i)).amount;
-                    i += 1;
-                };
-                sum
-            };
-            erc20.approve(self.pool.read(), u256 { low: total, high: 0 });
+            erc20.approve(self.pool.read(), total);
 
             // Return credit instructions to the pool
             deposits
