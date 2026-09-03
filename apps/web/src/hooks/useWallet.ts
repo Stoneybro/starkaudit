@@ -4,10 +4,18 @@ import { useCallback, useEffect, useState } from "react"
 import { getStarknet } from "@starknet-io/get-starknet-core"
 import type { StarknetWindowObject } from "@starknet-io/get-starknet-core"
 
+export type WalletOption = {
+  id: string
+  name: string
+  wallet: StarknetWindowObject
+}
+
 export type WalletState = {
   address?: string
   walletName?: string
   connecting: boolean
+  showPicker: boolean
+  options: WalletOption[]
   error?: string
 }
 
@@ -17,28 +25,68 @@ async function requestAddress(wallet: StarknetWindowObject): Promise<string | un
   return undefined
 }
 
+// MetaMask / EVM-only providers sometimes surface in the scan — they can't
+// serve Starknet requests, so filter to wallets advertising Starknet chains.
+function isStarknetWallet(w: StarknetWindowObject): boolean {
+  const chains = (w as unknown as { chains?: unknown }).chains
+  if (Array.isArray(chains)) {
+    return chains.some((c) => typeof c === "string" && c.includes("starknet"))
+  }
+  return true
+}
+
 export function useWallet() {
-  const [state, setState] = useState<WalletState>({ connecting: false })
+  const [state, setState] = useState<WalletState>({ connecting: false, showPicker: false, options: [] })
+
+  const connectTo = useCallback(async (option: WalletOption) => {
+    setState((s) => ({ ...s, connecting: true, showPicker: false, error: undefined }))
+    try {
+      const wallet = await getStarknet().enable(option.wallet)
+      const address = await requestAddress(wallet)
+      if (!address) {
+        setState({ connecting: false, showPicker: false, options: [], error: "Wallet connected but returned no account." })
+        return
+      }
+      setState({ connecting: false, showPicker: false, options: [], address, walletName: option.name })
+    } catch (e: unknown) {
+      setState({
+        connecting: false,
+        showPicker: false,
+        options: [],
+        error: e instanceof Error ? e.message.slice(0, 160) : "Connection failed.",
+      })
+    }
+  }, [])
 
   const connect = useCallback(async () => {
     setState((s) => ({ ...s, connecting: true, error: undefined }))
     try {
       const gstarknet = getStarknet()
-      const wallets: StarknetWindowObject[] = await gstarknet.getAvailableWallets()
+      const wallets = (await gstarknet.getAvailableWallets()).filter(isStarknetWallet)
       if (wallets.length === 0) {
-        setState({ connecting: false, error: "No Starknet wallet found — install Argent or Braavos." })
+        setState({ connecting: false, showPicker: false, options: [], error: "No Starknet wallet found — install Ready, Argent or Braavos." })
         return
       }
-      const wallet = await gstarknet.enable(wallets[0])
-      const address = await requestAddress(wallet)
-      if (!address) {
-        setState({ connecting: false, error: "Wallet connected but returned no account." })
+      const options = wallets.map((w) => ({ id: w.id, name: w.name ?? w.id, wallet: w }))
+      if (options.length === 1) {
+        const single = options[0]
+        setState({ connecting: true, showPicker: false, options: [] })
+        await connectTo(single)
         return
       }
-      setState({ connecting: false, address, walletName: wallets[0].name ?? wallets[0].id })
+      setState({ connecting: false, showPicker: true, options })
     } catch (e: unknown) {
-      setState({ connecting: false, error: e instanceof Error ? e.message.slice(0, 160) : "Connection failed." })
+      setState({
+        connecting: false,
+        showPicker: false,
+        options: [],
+        error: e instanceof Error ? e.message.slice(0, 160) : "Connection failed.",
+      })
     }
+  }, [connectTo])
+
+  const closePicker = useCallback(() => {
+    setState((s) => ({ ...s, showPicker: false, options: [], connecting: false }))
   }, [])
 
   const disconnect = useCallback(async () => {
@@ -47,7 +95,7 @@ export function useWallet() {
     } catch {
       // best effort
     }
-    setState({ connecting: false })
+    setState({ connecting: false, showPicker: false, options: [] })
   }, [])
 
   // Restore last session silently.
@@ -61,7 +109,7 @@ export function useWallet() {
       })
       .then((restored) => {
         if (!cancelled && restored?.address) {
-          setState({ connecting: false, address: restored.address, walletName: restored.w.name ?? restored.w.id })
+          setState({ connecting: false, showPicker: false, options: [], address: restored.address, walletName: restored.w.name ?? restored.w.id })
         }
       })
       .catch(() => {})
@@ -70,5 +118,5 @@ export function useWallet() {
     }
   }, [])
 
-  return { ...state, connect, disconnect, ready: !!state.address }
+  return { ...state, connect, connectTo, closePicker, disconnect, ready: !!state.address }
 }
