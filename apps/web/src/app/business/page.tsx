@@ -1,13 +1,15 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import Link from "next/link"
 import { Wallet } from "lucide-react"
 import { useWallet } from "@/hooks/useWallet"
 import { useProofFeed } from "@/hooks/useProofFeed"
-import { getProvider, sameAddress, shortHash } from "@/lib/starknet"
+import { REGISTRY_ADDRESS, getProvider, sameAddress, shortHash, voyagerTx } from "@/lib/starknet"
+import { errMsg } from "@/lib/utils"
 import { formatStrk, getAuditor, getStrkBalance, isRegistered } from "@/lib/registry"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { EmptyState } from "@/components/ui/empty-state"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -19,38 +21,73 @@ type BusinessInfo = {
   auditor: string
 }
 
+type TxState = {
+  pending: boolean
+  hash?: string
+  error?: string
+}
+
 export default function BusinessPage() {
-  const { address, ready, connecting, connect } = useWallet()
-  const { proofs, loading: feedLoading } = useProofFeed(ready)
+  const { address, ready, connecting, connect, getAccount } = useWallet()
+  const { proofs, loading: feedLoading, refresh: refreshFeed } = useProofFeed(ready)
   const [info, setInfo] = useState<BusinessInfo | null>(null)
   const [infoLoading, setInfoLoading] = useState(false)
+  const [tx, setTx] = useState<TxState>({ pending: false })
+  const [auditorInput, setAuditorInput] = useState("")
 
   useEffect(() => {
     if (!address) return
-    let cancelled = false
     const provider = getProvider()
-    Promise.all([
-      isRegistered(provider, address),
-      getStrkBalance(provider, address),
-      getAuditor(provider, address),
-    ]).then(
+    Promise.all([isRegistered(provider, address), getStrkBalance(provider, address), getAuditor(provider, address)]).then(
       ([registered, balance, auditor]) => {
-        if (cancelled) return
         setInfo({ registered, balance: formatStrk(balance), auditor })
         setInfoLoading(false)
       },
       () => {
-        if (cancelled) return
         setInfo(null)
         setInfoLoading(false)
       },
     )
-    return () => {
-      cancelled = true
-    }
   }, [address])
 
   const ownProofs = address ? proofs.filter((p) => sameAddress(p.business, address)) : []
+
+  const reloadInfo = useCallback(() => {
+    if (!address) return
+    const provider = getProvider()
+    Promise.all([isRegistered(provider, address), getStrkBalance(provider, address), getAuditor(provider, address)]).then(
+      ([registered, balance, auditor]) => {
+        setInfo({ registered, balance: formatStrk(balance), auditor })
+        setInfoLoading(false)
+      },
+      () => {
+        setInfo(null)
+        setInfoLoading(false)
+      },
+    )
+  }, [address])
+
+  const runTx = useCallback(
+    async (entrypoint: "register_business" | "set_auditor", calldata: string[]) => {
+      const account = getAccount()
+      if (!account) {
+        setTx({ pending: false, error: "Wallet not connected." })
+        return
+      }
+      setTx({ pending: true })
+      try {
+        const res = await account.execute({ contractAddress: REGISTRY_ADDRESS, entrypoint, calldata })
+        setTx({ pending: true, hash: res.transaction_hash })
+        await getProvider().waitForTransaction(res.transaction_hash)
+        setTx({ pending: false, hash: res.transaction_hash })
+        reloadInfo()
+        refreshFeed()
+      } catch (e: unknown) {
+        setTx({ pending: false, error: errMsg(e, "Transaction failed.") })
+      }
+    },
+    [getAccount, reloadInfo, refreshFeed],
+  )
 
   if (!ready) {
     return (
@@ -72,6 +109,25 @@ export default function BusinessPage() {
         <p className="text-sm text-muted-foreground font-mono">{address}</p>
       </div>
 
+      {tx.hash && (
+        <Card>
+          <CardContent className="flex flex-col gap-1 pt-5 text-sm">
+            <span className="text-muted-foreground">
+              {tx.pending ? "Transaction submitted — waiting for confirmation\u2026" : "Transaction confirmed"}
+            </span>
+            <a
+              href={voyagerTx(tx.hash)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-mono text-xs underline underline-offset-4"
+            >
+              {shortHash(tx.hash)} ↗
+            </a>
+          </CardContent>
+        </Card>
+      )}
+      {tx.error && <p className="text-sm text-destructive">{tx.error}</p>}
+
       {infoLoading || !info ? (
         <div className="grid gap-4 sm:grid-cols-3">
           {[0, 1, 2].map((i) => (
@@ -87,11 +143,16 @@ export default function BusinessPage() {
                 {info.registered ? <Badge variant="success">registered</Badge> : <Badge variant="muted">not registered</Badge>}
               </CardTitle>
             </CardHeader>
-            {!info.registered && (
+            {!info.registered ? (
+              <CardContent className="flex flex-col gap-2">
+                <p className="text-xs text-muted-foreground">Register this wallet as a business on the registry.</p>
+                <Button size="sm" disabled={tx.pending} onClick={() => runTx("register_business", [])}>
+                  {tx.pending ? "Submitting\u2026" : "Register business"}
+                </Button>
+              </CardContent>
+            ) : (
               <CardContent>
-                <p className="text-xs text-muted-foreground">
-                  Call <span className="font-mono">register_business()</span> on the registry to appear here.
-                </p>
+                <p className="text-xs text-muted-foreground">Auditor: {shortHash(info.auditor)}</p>
               </CardContent>
             )}
           </Card>
@@ -106,6 +167,23 @@ export default function BusinessPage() {
               <CardDescription>Chosen auditor</CardDescription>
               <CardTitle className="font-mono text-base">{shortHash(info.auditor)}</CardTitle>
             </CardHeader>
+            <CardContent className="flex flex-col gap-2">
+              <input
+                value={auditorInput}
+                onChange={(e) => setAuditorInput(e.target.value)}
+                placeholder="0x… auditor address"
+                spellCheck={false}
+                className="h-9 rounded-xl border border-input bg-transparent px-3 font-mono text-xs outline-none placeholder:text-muted-foreground focus:border-ring"
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={tx.pending || auditorInput.trim().length < 3}
+                onClick={() => runTx("set_auditor", [auditorInput.trim()])}
+              >
+                {tx.pending ? "Submitting\u2026" : "Set auditor"}
+              </Button>
+            </CardContent>
           </Card>
         </div>
       )}

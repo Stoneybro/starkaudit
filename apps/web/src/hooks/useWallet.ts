@@ -1,8 +1,10 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
+import { WalletAccount } from "starknet"
 import { getStarknet } from "@starknet-io/get-starknet-core"
 import type { StarknetWindowObject } from "@starknet-io/get-starknet-core"
+import { getProvider } from "@/lib/starknet"
 
 export type WalletOption = {
   id: string
@@ -13,6 +15,7 @@ export type WalletOption = {
 export type WalletState = {
   address?: string
   walletName?: string
+  wallet?: StarknetWindowObject
   connecting: boolean
   showPicker: boolean
   options: WalletOption[]
@@ -37,6 +40,10 @@ function isStarknetWallet(w: StarknetWindowObject): boolean {
 
 export function useWallet() {
   const [state, setState] = useState<WalletState>({ connecting: false, showPicker: false, options: [] })
+  const stateRef = useRef(state)
+  useEffect(() => {
+    stateRef.current = state
+  })
 
   const connectTo = useCallback(async (option: WalletOption) => {
     setState((s) => ({ ...s, connecting: true, showPicker: false, error: undefined }))
@@ -47,7 +54,7 @@ export function useWallet() {
         setState({ connecting: false, showPicker: false, options: [], error: "Wallet connected but returned no account." })
         return
       }
-      setState({ connecting: false, showPicker: false, options: [], address, walletName: option.name })
+      setState({ connecting: false, showPicker: false, options: [], address, walletName: option.name, wallet })
     } catch (e: unknown) {
       setState({
         connecting: false,
@@ -98,6 +105,18 @@ export function useWallet() {
     setState({ connecting: false, showPicker: false, options: [] })
   }, [])
 
+  // Account bound to the connected wallet for signing transactions.
+  const getAccount = useCallback((): WalletAccount | undefined => {
+    const { address, wallet } = stateRef.current
+    if (!address || !wallet) return undefined
+    return new WalletAccount({
+      provider: getProvider(),
+      walletProvider: wallet as unknown as Parameters<typeof WalletAccount.connect>[1],
+      address,
+      cairoVersion: "1",
+    })
+  }, [])
+
   // Restore last session silently.
   useEffect(() => {
     let cancelled = false
@@ -109,7 +128,7 @@ export function useWallet() {
       })
       .then((restored) => {
         if (!cancelled && restored?.address) {
-          setState({ connecting: false, showPicker: false, options: [], address: restored.address, walletName: restored.w.name ?? restored.w.id })
+          setState({ connecting: false, showPicker: false, options: [], address: restored.address, walletName: restored.w.name ?? restored.w.id, wallet: restored.w })
         }
       })
       .catch(() => {})
@@ -118,5 +137,5 @@ export function useWallet() {
     }
   }, [])
 
-  return { ...state, connect, connectTo, closePicker, disconnect, ready: !!state.address }
+  return { ...state, connect, connectTo, closePicker, disconnect, getAccount, ready: !!state.address }
 }
