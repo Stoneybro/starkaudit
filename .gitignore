@@ -24,3 +24,6 @@ Thumbs.db
 *.tsbuildinfo
 next-env.d.ts
 
+# starknet / scarb / foundry
+contracts/target/
+contracts/.snfoundry_cache/
