@@ -138,6 +138,72 @@ export async function getAuditor(provider: RpcProvider, business: string): Promi
   return res[0] ?? "0x0"
 }
 
+export type DistributionKey = { low: string; high: string } | null
+
+/** Business X25519 distribution pubkey, or null if unset / predeploy. */
+export async function getDistributionKey(provider: RpcProvider, business: string): Promise<DistributionKey> {
+  try {
+    const res = (await provider.callContract({
+      contractAddress: REGISTRY_ADDRESS,
+      entrypoint: "get_distribution_key",
+      calldata: [business],
+    })) as unknown as string[]
+    if (res.length < 2) return null
+    return { low: res[0], high: res[1] }
+  } catch {
+    // Unset key (NO_DIST_KEY) or older on-chain deployment.
+    return null
+  }
+}
+
+/** Whether a sealed package exists for (business, version). */
+export async function hasThresholdPackage(
+  provider: RpcProvider,
+  business: string,
+  version: string,
+): Promise<boolean> {
+  try {
+    const res = (await provider.callContract({
+      contractAddress: REGISTRY_ADDRESS,
+      entrypoint: "has_threshold_package",
+      calldata: [business, version],
+    })) as unknown as string[]
+    return feltBool(res[0])
+  } catch {
+    return false
+  }
+}
+
+/** All registered businesses from BusinessRegistered events (key = business). */
+export async function fetchRegisteredBusinesses(provider: RpcProvider): Promise<string[]> {
+  const out: string[] = []
+  const seen = new Set<string>()
+  let continuationToken: string | undefined = undefined
+  for (let page = 0; page < 20; page++) {
+    const res = (await provider.getEvents({
+      address: REGISTRY_ADDRESS,
+      from_block: { block_number: REGISTRY_DEPLOY_BLOCK },
+      to_block: "latest",
+      chunk_size: 100,
+      continuation_token: continuationToken,
+    })) as unknown as RawEventsPage
+    for (const e of res.events ?? []) {
+      const keys: string[] = e.keys ?? []
+      if (keys[0] === SELECTORS.businessRegistered && keys[1]) {
+        const addr = keys[1]
+        const norm = addr.toLowerCase()
+        if (!seen.has(norm)) {
+          seen.add(norm)
+          out.push(addr)
+        }
+      }
+    }
+    if (!res.continuation_token) break
+    continuationToken = res.continuation_token
+  }
+  return out
+}
+
 export async function getStrkBalance(provider: RpcProvider, address: string): Promise<bigint> {
   const res = (await provider.callContract({
     contractAddress: STRK_ADDRESS,

@@ -178,3 +178,75 @@ fn test_flag_exception_auditor_succeeds() {
     stop_cheat_caller_address(dispatcher.contract_address);
     spy.assert_emitted(@array![(dispatcher.contract_address, shadowaudit::audit_registry::AuditRegistry::Event::ExceptionFlagged(shadowaudit::audit_registry::ExceptionFlagged { nullifier: 0xabc }))]);
 }
+
+#[test]
+fn test_distribution_key_set_and_get() {
+    let (_, dispatcher) = deploy_registry();
+    assert(!dispatcher.has_distribution_key(BUSINESS()), 'no key initially');
+    // Business publishes its own key (open self-serve).
+    start_cheat_caller_address(dispatcher.contract_address, BUSINESS());
+    dispatcher.set_distribution_key(0x111, 0x222);
+    stop_cheat_caller_address(dispatcher.contract_address);
+    assert(dispatcher.has_distribution_key(BUSINESS()), 'key exists');
+    let (low, high) = dispatcher.get_distribution_key(BUSINESS());
+    assert(low == 0x111, 'low mismatch');
+    assert(high == 0x222, 'high mismatch');
+}
+
+#[test]
+#[should_panic(expected: ('NO_DIST_KEY',))]
+fn test_distribution_key_missing_reverts() {
+    let (_, dispatcher) = deploy_registry();
+    dispatcher.get_distribution_key(BUSINESS());
+}
+
+#[test]
+fn test_share_package_bound_to_version() {
+    let (addr, dispatcher) = deploy_registry();
+    // Business publishes key first.
+    start_cheat_caller_address(addr, BUSINESS());
+    dispatcher.set_distribution_key(0x111, 0x222);
+    stop_cheat_caller_address(addr);
+    // Auditor commits a threshold (version 1), then shares the sealed package.
+    start_cheat_caller_address(addr, AUDITOR());
+    dispatcher.set_threshold_commitment(0xabc);
+    dispatcher.share_threshold_package(BUSINESS(), 0x1, 0x2, 0x3, 0x4, 0x5, 0x6);
+    stop_cheat_caller_address(addr);
+    assert(dispatcher.has_threshold_package(BUSINESS(), 1), 'package v1 exists');
+    assert(!dispatcher.has_threshold_package(BUSINESS(), 2), 'no package v2');
+    let (eph_low, eph_high, nonce, c0, c1, c2) = dispatcher.get_threshold_package(BUSINESS(), 1);
+    assert(eph_low == 0x1, 'eph_low mismatch');
+    assert(eph_high == 0x2, 'eph_high mismatch');
+    assert(nonce == 0x3, 'nonce mismatch');
+    assert(c0 == 0x4, 'c0 mismatch');
+    assert(c1 == 0x5, 'c1 mismatch');
+    assert(c2 == 0x6, 'c2 mismatch');
+}
+
+#[test]
+#[should_panic(expected: ('NOT_AUDITOR',))]
+fn test_share_package_not_auditor_reverts() {
+    let (_, dispatcher) = deploy_registry();
+    start_cheat_caller_address(dispatcher.contract_address, ATTACKER());
+    dispatcher.share_threshold_package(BUSINESS(), 0x1, 0x2, 0x3, 0x4, 0x5, 0x6);
+    stop_cheat_caller_address(dispatcher.contract_address);
+}
+
+#[test]
+#[should_panic(expected: ('NO_THRESHOLD',))]
+fn test_share_package_without_threshold_reverts() {
+    let (addr, dispatcher) = deploy_registry();
+    start_cheat_caller_address(addr, AUDITOR());
+    dispatcher.share_threshold_package(BUSINESS(), 0x1, 0x2, 0x3, 0x4, 0x5, 0x6);
+    stop_cheat_caller_address(addr);
+}
+
+#[test]
+#[should_panic(expected: ('NO_PACKAGE',))]
+fn test_get_missing_package_reverts() {
+    let (addr, dispatcher) = deploy_registry();
+    start_cheat_caller_address(addr, AUDITOR());
+    dispatcher.set_threshold_commitment(0xabc);
+    stop_cheat_caller_address(addr);
+    dispatcher.get_threshold_package(BUSINESS(), 1);
+}

@@ -63,9 +63,9 @@ Gate: `computed==onchain` both fields. If false -> fix tags; if still false by E
 
 ## Stage 4 — AuditRegistry (P0)
 
-`contracts/src/audit_registry.cairo` storage `businesses,auditor,threshold_commitment/version,duplicate_window,results:Map<nullifier>,dup_seen, auditor_of:Map<business,auditor>` `AuditResult{... business}` functions `register_business()` open, `set_auditor(auditor)` business-only, `register_business_for` auditor helper, `set_threshold_commitment` (global demo), `submit_proof`, `flag_exception` events `ProofSubmitted(business),BusinessRegistered,AuditorSet`. For now `submit_proof` `offchain_verified=true`.
+`contracts/src/audit_registry.cairo` storage `businesses,auditor,threshold_commitment/version,duplicate_window,results:Map<nullifier>,dup_seen, auditor_of:Map<business,auditor>, distribution_keys:Map<business,DistributionKey>, packages:Map<(business,version),ThresholdPackage>` `AuditResult{... business}` functions `register_business()` open, `set_auditor(auditor)` business-only, `register_business_for` auditor helper, `set_threshold_commitment` (global demo), `set_distribution_key(low,high)` open self-serve, `share_threshold_package(...)` auditor-only bound to live version, `get_/has_threshold_package` + `get_/has_distribution_key` views, `submit_proof`, `flag_exception` events `ProofSubmitted(business),BusinessRegistered,AuditorSet,DistributionKeySet,ThresholdPackageShared`. For now `submit_proof` `offchain_verified=true`.
 
-`snforge` tests: access control, versioning, `submit_proof` store, duplicate `dup_commit` window -> `is_duplicate=true`, anti-replay same `nullifier` -> revert. Deploy Sepolia `sncast deploy --constructor auditor`, call `register_business` + `set_threshold_commitment` -> Voyager events.
+`snforge` tests: access control, versioning, `submit_proof` store, duplicate `dup_commit` window -> `is_duplicate=true`, anti-replay same `nullifier` -> revert, distribution key set/get + missing reverts, package bound to version + `NOT_AUDITOR`/`NO_THRESHOLD`/`NO_PACKAGE` reverts. Deploy Sepolia `sncast deploy --constructor auditor`, call `register_business` + backend `dist_keygen.ts` (`set_distribution_key`) + `set_threshold_commitment` (auditor UI auto-shares) -> Voyager events.
 
 Gate: `snforge test` all pass, `ProofSubmitted` visible.
 
@@ -73,7 +73,7 @@ Gate: `snforge test` all pass, `ProofSubmitted` visible.
 
 ## Stage 5 — Pass/Fail/Duplicate End-to-End (P0 never cut)
 
-Compliant `transfer 0.5 STRK` (<1 STRK threshold) -> witness `{channel_key,token,index,salt,amount,k,threshold:1e18,counterparty:poseidon([payee]),period:20260901}` -> `audit_commitment=poseidon(PRIVATE_AUDIT_TAG,amount,salt,counterparty,period)` `dup_commit=poseidon(DUP_TAG,counterparty,amount,period)` -> `registry.submit_proof(...)` (same for `1.5 STRK` fail and same `0.5` duplicate). Each nullifier recorded.
+Compliant `transfer 0.5 STRK` (<1 STRK threshold) -> backend `sync_package.ts` first (decrypts sealed package, verifies `poseidon == (commitment, version)`, writes gitignored `threshold-package.json`; `stage5.ts` refuses without it — threshold is never hardcoded or sent manually) -> witness `{channel_key,token,index,salt,amount,k,threshold:1e18,counterparty:poseidon([payee]),period:20260901}` -> `audit_commitment=poseidon(PRIVATE_AUDIT_TAG,amount,salt,counterparty,period)` `dup_commit=poseidon(DUP_TAG,counterparty,amount,period)` -> `registry.submit_proof(...)` (same for `1.5 STRK` fail and same `0.5` duplicate). Each nullifier recorded.
 
 Gate: Voyager `ProofSubmitted pass:true` , `pass:false`, `pass:false is_duplicate:true` all with no amount in event.
 
@@ -93,7 +93,7 @@ Gate: invoke `Succeeded` on Sepolia. **Keep this** - dropping it loses `anonymiz
 
 ## Stage 7 — Dashboard (minimal)
 
-`pnpm --filter web add starknet@10.4.0 ...` (pin) -> `src/lib/starknet.ts` + `registry.ts` -> `/auditor` `provider.getEvents` feed split `fails/duplicates/exceptions` with `unverified/offchain` badges, `/business` registered/balance/nullifier list. Never render amount/counterparty. `pnpm --filter web build` must pass.
+`pnpm --filter web add starknet@10.4.0 ...` (pin) -> `src/lib/starknet.ts` + `registry.ts` -> `/auditor` Tests tab (commit threshold with random salt, auto-seal + share to keyed businesses, Distribution status per business) + `provider.getEvents` feed split `fails/duplicates/exceptions` with `unverified/offchain` badges, `/business` registered/balance/nullifier list. Never render amount/counterparty. `pnpm --filter web build` must pass.
 
 Gate: `dev` + wallet connect (Ready), auditor shows Stage 5 events, no amount in UI or source, build 0.
 

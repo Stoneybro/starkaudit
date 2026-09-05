@@ -33,6 +33,7 @@ No way to prove `amount <= threshold` + `no duplicates` without showing amounts.
 - `Shield (public Deposit)` -> `10` blocks maturity -> `Private transfer` (`UseNote` publishes `nullifier = h(NULLIFIER_TAG, channel_key, token, index, 0, owner_private_key)` `notes-and-nullifiers.md:68`, `enc_amount = h(ENC_AMOUNT_TAG, channel_key, token, index, 0, salt)+amount` `viewing-keys.md:25`) or batch via `PayrollAnonymizer` `withdraw->helper distributes->approve pool->credit open note (amount public, owner hidden)` `helpers__privacy-invoke.md:13`.
 - **After settlement**, business backend (SDK key-holder, never Wallet API) generates `audit_commitment = h(PRIVATE_AUDIT_TAG, amount, salt, counterparty, period)` (blinded) + `dup_commit = h(DUP_TAG, counterparty, amount, period)` (deterministic, no salt) + Cairo ZK proof bound to `nullifier + enc_amount + note_id = h(NOTE_ID_TAG, channel_key, token, index, 0)` `notes-and-nullifiers.md:52`. Registry verifies (or stores with `offchain_verified` flag) and checks `dup_commit` uniqueness within window.
 - Auditor posts `threshold_commitment = h(threshold, auditor_salt)` once, then sees only `pass/fail`, `is_duplicate`, `exceptions`. Never amounts.
+- **No manual delivery, ever:** the auditor seals `(threshold, salt, version)` with nacl box to each business's on-chain X25519 distribution pubkey (`set_distribution_key`); the contract stores the sealed felts bound to the threshold version (`share_threshold_package`, auditor-only). The business backend (`sync_package.ts`) decrypts with `BUSINESS_DIST_SECRET`, verifies `poseidon(package) ==` on-chain `(commitment, version)`, and writes gitignored `threshold-package.json` — the sole threshold source for witness building. Public sees only sealed felts.
 
 Pool untouched; no contract sees a private amount in clear.
 
@@ -40,10 +41,10 @@ Pool untouched; no contract sees a private amount in clear.
 
 | Actor | Does | Knows |
 |---|---|---|
-| Business | Shields, pays (SDK), builds witness, submits | amounts, `k` (`BigInt`), `channel_key`, `salt`, `threshold` |
+| Business | Shields, pays (SDK), publishes distribution pubkey, syncs sealed package, builds witness, submits | amounts, `k` (`BigInt`), `channel_key`, `salt`, `threshold` (via sealed package only) |
 | Payees | Receive via Wallet API (Ready, `Register` required) | own receipts |
-| Auditor | Sets `threshold_commitment` + window, reviews | threshold, `pass/fail`, nullifiers, timing |
-| Chain | Stores commitments, verifies or marks `offchain_verified` | hashes, booleans, nullifiers |
+| Auditor | Sets `threshold_commitment` + window, seals packages per business, reviews | threshold, `pass/fail`, nullifiers, timing |
+| Chain | Stores commitments, sealed packages, verifies or marks `offchain_verified` | hashes, sealed felts, booleans, nullifiers |
 
 ## 5. Components (P0 only)
 
@@ -51,7 +52,7 @@ Pool untouched; no contract sees a private amount in clear.
 2. **PayrollAnonymizer** - `fn privacy_invoke(deposits: Span<OpenNoteDeposit>) -> Span<OpenNoteDeposit>` (`CALLER_NOT_PRIVACY`, `approve`, `balance-delta`, `u256->u128`, `at most one invoke/tx`).
 3. **Audit Circuit** - public `nullifier, note_id, enc_amount, threshold_commitment, audit_commitment, dup_commit` private `channel_key,token,index,salt,amount,k,counterparty,period,threshold`; constraints `audit_commitment`, `dup_commit`, `threshold_commitment`, `amount<=threshold`, `nullifier` + `enc_amount` binding + `note_id` slot.
 4. **Verifier** - reuse Integrity/Herodotus fact-registry if available day1 EOD, else `offchain_verified:true` fallback (indexer verifies, README says so).
-5. **AuditRegistry** - `businesses, auditor, threshold_commitment/version, duplicate_window, results:Map<nullifier,AuditResult>, dup_seen:Map<dup_commit,u64>` `submit_proof(nullifier,note_id,audit_commitment,dup_commit,enc_amount,proof)` -> storage check (`pool.view_note_payload(note_id)==enc_amount` if exists else offchain) -> verifier or offchain store -> duplicate check -> `ProofSubmitted(nullifier,pass,is_duplicate,unverified_binding,offchain_verified)`.
+5. **AuditRegistry** - `businesses, auditor, threshold_commitment/version, duplicate_window, results:Map<nullifier,AuditResult>, dup_seen:Map<dup_commit,u64>, distribution_keys:Map<business,DistributionKey>, packages:Map<(business,version),ThresholdPackage>` `submit_proof(nullifier,note_id,audit_commitment,dup_commit,enc_amount,proof)` -> storage check (`pool.view_note_payload(note_id)==enc_amount` if exists else offchain) -> verifier or offchain store -> duplicate check -> `ProofSubmitted(nullifier,pass,is_duplicate,unverified_binding,offchain_verified)`; `set_distribution_key(low,high)` open self-serve, `share_threshold_package(business,eph_low,eph_high,nonce,c0,c1,c2)` auditor-only bound to live version, `get_threshold_package/has_threshold_package` views; events `DistributionKeySet, ThresholdPackageShared`.
 6. **Dashboard** - `apps/web` (`Next.js 16.3.4`, `starknet@10.4.0` pinned) `/business` + `/auditor` (event feed, `unverified/offchain` badges, never amount).
 
 **Cut:** shadow accounts (RC-gated `0.14.3-rc.6`), AVNU/Ekubo swap, MPC hidden-threshold - moved to roadmap §9.
@@ -63,21 +64,22 @@ Pool untouched; no contract sees a private amount in clear.
 
 ## 7. Flow
 
-Setup: `register()` (once), `shield approve->deposit (autoSetup:true, wait head-10>receipt)` , auditor posts `threshold_commitment`.
-Per batch: `transfer` or `invoke PayrollAnonymizer` with `deposits=[{note_id:openNoteIds[i], token, amount}]` as `InvokeExternal` calldata -> prove `provingBlockId=head-10, tip:0n, proofFacts` conditional -> `submit_proof` -> dashboard.
+Setup: `register()` (once), business backend `dist_keygen.ts` publishes distribution pubkey, `shield approve->deposit (autoSetup:true, wait head-10>receipt)`, auditor posts `threshold_commitment` in Tests tab (auto-seals + shares to every keyed business), backend `sync_package.ts` verifies + writes `threshold-package.json`.
+Per batch: `transfer` or `invoke PayrollAnonymizer` with `deposits=[{note_id:openNoteIds[i], token, amount}]` as `InvokeExternal` calldata -> prove `provingBlockId=head-10, tip:0n, proofFacts` conditional -> witness reads `threshold-package.json` (refuses without it) -> `submit_proof` -> dashboard.
 
 ## 8. Trust
 
 | Data | Business | Auditor | Public |
 |---|---|---|---|
 | amount, salt, `k`, `channel_key` | ✅ | ❌ | ❌ |
-| threshold | ✅ | ✅ | `h(threshold)` |
+| threshold | ✅ (sealed package only) | ✅ | `h(threshold)` + sealed felts (unreadable without business secret) |
+| distribution secret | ✅ (`BUSINESS_DIST_SECRET`, env-only) | ❌ | ❌ |
 | `audit/dup_commit` | ✅ | hash (auditor can brute `dup`) | hash |
 | `nullifier, enc_*, Deposit, timing` | ✅ | ✅ | ✅ `compliance.md:44` |
 
 ## 9. Limitations
 
-1. **Threshold known to business** - timestamped commitment + public frequency mitigates structuring.
+1. **Threshold known to business** - inherent to single-prover ZK (the prover needs the number); timestamped commitment + public frequency mitigates structuring. Delivery is sealed on-chain per business (never manual, never pasted); salt is fresh-random per rotation.
 2. **Binding needs correct Poseidon tags** `OPEN_NOTE_SALT=1 vs >=2`; gated by `test-vectors/vector1.json` `nullifier+enc_amount` match; else `unverified_binding:true`.
 3. **Missing proof = exception** - nullifiers unlinkable without `k` `notes-and-nullifiers.md:87`, `flag_exception` manual.
 4. **Anonymizer amounts public** `what-is-strk20.md:23`.

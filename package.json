@@ -22,6 +22,7 @@
   },
   "dependencies": {
     "@starkware-libs/starknet-privacy-sdk": "0.14.3-rc.6",
-    "starknet": "10.4.0"
+    "starknet": "10.4.0",
+    "tweetnacl": "^1.0.3"
   }
 }

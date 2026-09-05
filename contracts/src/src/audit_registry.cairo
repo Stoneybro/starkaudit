@@ -57,6 +57,46 @@ pub struct AuditorSet {
     pub auditor: ContractAddress,
 }
 
+// Threshold distribution: the auditor never sends (threshold, salt) manually.
+// Each business publishes an X25519 distribution pubkey (32 bytes as low/high
+// u128 felts); the auditor seals the threshold package with nacl box and the
+// contract stores the sealed felts bound to the current threshold version.
+// Plaintext layout (72 bytes): threshold_u256_be32 || salt_felt_be32 ||
+// version_u64_be8. Ciphertext (nacl box overhead 16) is 88 bytes → 3 felts of
+// 31/31/26 bytes big-endian; the 24-byte nonce fits one felt; the 32-byte
+// ephemeral pubkey is stored as low/high u128 felts like the long-term key.
+
+#[derive(Drop, Serde, starknet::Store)]
+pub struct DistributionKey {
+    pub low: felt252,  // first 16 bytes of the X25519 pubkey
+    pub high: felt252, // last 16 bytes of the X25519 pubkey
+}
+
+#[derive(Drop, Serde, starknet::Store)]
+pub struct ThresholdPackage {
+    pub eph_low: felt252,
+    pub eph_high: felt252,
+    pub nonce: felt252,
+    pub c0: felt252,
+    pub c1: felt252,
+    pub c2: felt252,
+}
+
+#[derive(Drop, starknet::Event)]
+pub struct DistributionKeySet {
+    #[key]
+    pub business: ContractAddress,
+    pub low: felt252,
+    pub high: felt252,
+}
+
+#[derive(Drop, starknet::Event)]
+pub struct ThresholdPackageShared {
+    #[key]
+    pub business: ContractAddress,
+    pub version: u64,
+}
+
 // ── Interface ────────────────────────────────────────────────────────────────
 
 #[starknet::interface]
@@ -84,13 +124,28 @@ pub trait IAuditRegistry<T> {
     fn get_threshold_version(self: @T) -> u64;
     fn get_duplicate_window(self: @T) -> u64;
     fn get_auditor(self: @T, business: ContractAddress) -> ContractAddress;
+    fn set_distribution_key(ref self: T, low: felt252, high: felt252);
+    fn get_distribution_key(self: @T, business: ContractAddress) -> (felt252, felt252);
+    fn has_distribution_key(self: @T, business: ContractAddress) -> bool;
+    fn share_threshold_package(
+        ref self: T,
+        business: ContractAddress,
+        eph_low: felt252,
+        eph_high: felt252,
+        nonce: felt252,
+        c0: felt252,
+        c1: felt252,
+        c2: felt252,
+    );
+    fn get_threshold_package(self: @T, business: ContractAddress, version: u64) -> (felt252, felt252, felt252, felt252, felt252, felt252);
+    fn has_threshold_package(self: @T, business: ContractAddress, version: u64) -> bool;
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
 
 #[starknet::contract]
 pub mod AuditRegistry {
-    use super::{AuditResult, IAuditRegistry, ProofSubmitted, ExceptionFlagged, ThresholdUpdated, BusinessRegistered, AuditorSet};
+    use super::{AuditResult, IAuditRegistry, ProofSubmitted, ExceptionFlagged, ThresholdUpdated, BusinessRegistered, AuditorSet, DistributionKey, DistributionKeySet, ThresholdPackage, ThresholdPackageShared};
     use starknet::{ContractAddress, get_caller_address, get_block_timestamp};
     use starknet::storage::{Map, StoragePointerReadAccess, StoragePointerWriteAccess, StoragePathEntry};
 
@@ -106,6 +161,10 @@ pub mod AuditRegistry {
         result_exists: Map<felt252, bool>,     // anti-replay guard
         dup_seen: Map<felt252, u64>,           // dup_commit → timestamp first seen
         dup_seen_exists: Map<felt252, bool>,   // dup_commit → ever seen (timestamp 0 is valid, so 0 is no sentinel)
+        distribution_keys: Map<ContractAddress, DistributionKey>, // business → X25519 distribution pubkey
+        distribution_key_exists: Map<ContractAddress, bool>,
+        packages: Map<(ContractAddress, u64), ThresholdPackage>, // (business, threshold version) → sealed package
+        package_exists: Map<(ContractAddress, u64), bool>,
         // [DECIDE] verifier address — set in constructor once §4 verifier is confirmed.
         // verifier: ContractAddress,
     }
@@ -118,6 +177,8 @@ pub mod AuditRegistry {
         ThresholdUpdated: ThresholdUpdated,
         BusinessRegistered: BusinessRegistered,
         AuditorSet: AuditorSet,
+        DistributionKeySet: DistributionKeySet,
+        ThresholdPackageShared: ThresholdPackageShared,
     }
 
     #[constructor]
@@ -272,6 +333,58 @@ pub mod AuditRegistry {
 
         fn get_auditor(self: @ContractState, business: ContractAddress) -> ContractAddress {
             self.auditor_of.entry(business).read()
+        }
+
+        /// Publish the caller's X25519 distribution pubkey (low/high u128 felts).
+        /// Open self-serve like register_business: any caller sets its own key.
+        /// The auditor seals each threshold package to this key — no manual delivery.
+        fn set_distribution_key(ref self: ContractState, low: felt252, high: felt252) {
+            let caller = get_caller_address();
+            self.distribution_keys.entry(caller).write(DistributionKey { low, high });
+            self.distribution_key_exists.entry(caller).write(true);
+            self.emit(DistributionKeySet { business: caller, low, high });
+        }
+
+        fn get_distribution_key(self: @ContractState, business: ContractAddress) -> (felt252, felt252) {
+            assert(self.distribution_key_exists.entry(business).read(), 'NO_DIST_KEY');
+            let key = self.distribution_keys.entry(business).read();
+            (key.low, key.high)
+        }
+
+        fn has_distribution_key(self: @ContractState, business: ContractAddress) -> bool {
+            self.distribution_key_exists.entry(business).read()
+        }
+
+        /// Store the sealed threshold package for a business, bound to the
+        /// CURRENT threshold version. Auditor-only. The backend decrypts and
+        /// checks poseidon(package) against the on-chain commitment + version,
+        /// so a stale or mismatched package can never be used silently.
+        fn share_threshold_package(
+            ref self: ContractState,
+            business: ContractAddress,
+            eph_low: felt252,
+            eph_high: felt252,
+            nonce: felt252,
+            c0: felt252,
+            c1: felt252,
+            c2: felt252,
+        ) {
+            self._assert_auditor();
+            let version = self.threshold_version.read();
+            assert(version != 0, 'NO_THRESHOLD');
+            self.packages.entry((business, version)).write(ThresholdPackage { eph_low, eph_high, nonce, c0, c1, c2 });
+            self.package_exists.entry((business, version)).write(true);
+            self.emit(ThresholdPackageShared { business, version });
+        }
+
+        fn get_threshold_package(self: @ContractState, business: ContractAddress, version: u64) -> (felt252, felt252, felt252, felt252, felt252, felt252) {
+            assert(self.package_exists.entry((business, version)).read(), 'NO_PACKAGE');
+            let p = self.packages.entry((business, version)).read();
+            (p.eph_low, p.eph_high, p.nonce, p.c0, p.c1, p.c2)
+        }
+
+        fn has_threshold_package(self: @ContractState, business: ContractAddress, version: u64) -> bool {
+            self.package_exists.entry((business, version)).read()
         }
     }
 

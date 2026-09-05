@@ -25,6 +25,9 @@ export function getProvider(): RpcProvider {
 export const SELECTORS = {
   proofSubmitted: hash.getSelectorFromName("ProofSubmitted"),
   exceptionFlagged: hash.getSelectorFromName("ExceptionFlagged"),
+  businessRegistered: hash.getSelectorFromName("BusinessRegistered"),
+  distributionKeySet: hash.getSelectorFromName("DistributionKeySet"),
+  thresholdPackageShared: hash.getSelectorFromName("ThresholdPackageShared"),
 } as const
 
 export function shortHash(h: string): string {

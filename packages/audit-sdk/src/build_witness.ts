@@ -39,7 +39,8 @@ export function buildDupCommit(witness: AuditWitness): bigint {
 }
 
 /**
- * Build the threshold commitment (set by auditor, shared out-of-band with business).
+ * Build the threshold commitment (committed by auditor, delivered to the
+ * business backend sealed on-chain via scripts/sync_package.ts — never manual).
  * threshold_commitment = poseidon(THRESHOLD_TAG, threshold, auditor_salt)
  */
 export function buildThresholdCommitment(witness: AuditWitness): bigint {

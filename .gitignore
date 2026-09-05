@@ -15,6 +15,9 @@ build/
 .env*
 !.env.example
 
+# sealed threshold package (decrypted business secret material — never commit)
+threshold-package.json
+
 # os / editor
 .DS_Store
 Thumbs.db

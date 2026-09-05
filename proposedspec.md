@@ -58,6 +58,10 @@ NoteOpening { channel_key, token, index, amount: u128, salt: felt252, owner_priv
 AuditCommitment = poseidon(PRIVATE_AUDIT_TAG, amount, salt, counterparty, period)
 DupCommit       = poseidon(DUP_TAG, counterparty, amount, period) // no salt
 ThresholdCommitment = poseidon(THRESHOLD_TAG, threshold, auditor_salt)
+DistributionKey { low: felt252, high: felt252 } // X25519 pubkey, 32B as low/high u128
+// SealedPackage plaintext (72B): threshold_u256_be32 || salt_felt_be32 || version_u64_be8
+// nacl box -> 88B ciphertext -> felts (nonce, c0, c1, c2) + ephemeral pubkey (eph_low, eph_high)
+// ThresholdPackage { eph_low, eph_high, nonce, c0, c1, c2 } — bound to threshold_version on write
 ProofBundle { nullifier: felt252 // h(NULLIFIER_TAG,...) notes-and-nullifiers.md:68
               note_id: felt252   // h(NOTE_ID_TAG,...) notes-and-nullifiers.md:52
               audit_commitment, dup_commit, enc_amount, proof }
@@ -66,7 +70,7 @@ ProofBundle { nullifier: felt252 // h(NULLIFIER_TAG,...) notes-and-nullifiers.md
 ## 3. Circuit `[SPEC+VERIFY]`
 
 Public: `nullifier, note_id, enc_amount, threshold_commitment, audit_commitment, dup_commit`
-Private: `NoteOpening, threshold:u128, threshold_salt, counterparty, period`
+Private: `NoteOpening, threshold:u128, threshold_salt, counterparty, period` — `threshold/threshold_salt` come ONLY from the sealed on-chain package (`sync_package.ts` -> `threshold-package.json`); witness building refuses without a version-matching verified package.
 
 Constraints 1 `audit_commitment` 2 `dup_commit` 3 `threshold_commitment` 4 `amount<=threshold` 5 **binding** `nullifier==... && enc_amount==...+amount && note_id==...` + storage check closes fabrication hole (circuit cannot read storage -> registry checks `pool.view_note_payload(note_id)==enc_amount` if exists else `offchain_verified`).
 
@@ -83,14 +87,18 @@ Interface: `fn verify(proof: Span<felt>, public_inputs: Span<felt>)->bool` or `i
 
 ## 5. Registry `contracts/src/audit_registry.cairo` `[SPEC]`
 
-Storage `businesses:Map<addr,bool> auditor threshold_commitment threshold_version duplicate_window results:Map<nullifier,AuditResult> dup_seen:Map<dup_commit,u64>`
+Storage `businesses:Map<addr,bool> auditor threshold_commitment threshold_version duplicate_window results:Map<nullifier,AuditResult> dup_seen:Map<dup_commit,u64> distribution_keys:Map<addr,DistributionKey> packages:Map<(addr,version),ThresholdPackage>`
+
+`register_business()` open (any wallet self-registers), `set_auditor(auditor)` business-only (caller sets `auditor_of[caller]=auditor` — demo: business picks any auditor to get pass/fail), `register_business_for(addr)` auditor helper, `set_threshold_commitment(hash)` auditor-only (global, demo) versioned, `set_distribution_key(low,high)` open self-serve (caller publishes its own X25519 pubkey), `share_threshold_package(business,eph_low,eph_high,nonce,c0,c1,c2)` auditor-only bound to live `threshold_version` (`NO_THRESHOLD` before first commit), `get_threshold_package/has_threshold_package` + `get_distribution_key/has_distribution_key` views, `submit_proof(nullifier,note_id,audit_commitment,dup_commit,enc_amount,proof)`:
 
 `AuditResult { note_id, audit_commitment, dup_commit, pass, unverified_binding, offchain_verified, submitted_at, is_duplicate }`
 
-`register_business()` open (any wallet self-registers), `set_auditor(auditor)` business-only (caller sets `auditor_of[caller]=auditor` — demo: business picks any auditor to get pass/fail), `register_business_for(addr)` auditor helper, `set_threshold_commitment(hash)` auditor-only (global, demo) versioned, `submit_proof(nullifier,note_id,audit_commitment,dup_commit,enc_amount,proof)`:
+`submit_proof` steps:
 0 `!results.contains(nullifier)` 1 storage check (`pool.view` if exists else `offchain=true`) 2 verifier or store 3 `dup_seen` window -> `is_duplicate` overrides `pass` 4 `emit ProofSubmitted(nullifier,pass,is_duplicate,unverified_binding,offchain_verified)`
 
 `flag_exception(nullifier)` manual - nullifiers unlinkable without `k`.
+
+Distribution flow (no manual delivery): backend `dist_keygen.ts` -> `set_distribution_key` -> auditor Tests tab commits threshold (auto `share_threshold_package` per keyed business) -> backend `sync_package.ts` decrypts + verifies `poseidon == (commitment, version)` -> `threshold-package.json` (gitignored) feeds witnesses. Events `DistributionKeySet(business), ThresholdPackageShared(business,version)`.
 
 ## 6. PayrollAnonymizer `contracts/src/payroll_anonymizer.cairo` `[SPEC]`
 

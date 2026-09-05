@@ -6,6 +6,7 @@
  * Run: node --import tsx/esm --env-file=.env ./scripts/stage5.ts
  */
 import { constants, hash } from "starknet"
+import { readFileSync } from "node:fs"
 import {
   buildAccount, buildProvider, buildTransfers, getProvingBlockId, waitForMaturity,
 } from "../packages/audit-sdk/src/connect.js"
@@ -23,8 +24,17 @@ const POOL_ADDRESS = process.env.POOL_ADDRESS! || "0x0254a6b2997ef52e9f830ce1f54
 const STRK = "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d"
 const REGISTRY = "0x1ce7138415c267093450c95241c0a02e1e5cd1b4db52452149fa05f36d6ead6"
 
-const THRESHOLD = 1000000000000000000n // 1 STRK — must match on-chain threshold_commitment
-const AUDITOR_SALT = 0xcafebabefn
+// Threshold inputs come ONLY from the sealed on-chain package synced by
+// scripts/sync_package.ts — never hardcoded, never delivered manually.
+function loadThresholdPackage(): { threshold: bigint; auditorSalt: bigint } {
+  try {
+    const pkg = JSON.parse(readFileSync(new URL("../threshold-package.json", import.meta.url), "utf8"))
+    return { threshold: BigInt(pkg.threshold_wei), auditorSalt: BigInt(pkg.salt) }
+  } catch {
+    throw new Error("threshold-package.json missing or unreadable — run scripts/sync_package.ts first (threshold is distributed sealed on-chain, never hardcoded)")
+  }
+}
+const { threshold: THRESHOLD, auditorSalt: AUDITOR_SALT } = loadThresholdPackage()
 const PERIOD = 20260903n
 const PASS_AMOUNT = 500000000000000000n
 const FAIL_AMOUNT = 1500000000000000000n
