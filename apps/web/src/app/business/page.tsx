@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useQuery } from "@tanstack/react-query";
 import { ExternalLink, RefreshCw } from "lucide-react";
 import { AppSidebar, type AppView } from "@/components/ui/app-sidebar";
 import {
@@ -48,9 +49,38 @@ export default function BusinessPage() {
   const [auditor, setAuditor] = useState<string | null>(null);
   const [balanceRaw, setBalanceRaw] = useState<bigint | null>(null);
   const [balanceLoading, setBalanceLoading] = useState(false);
-  const [shieldedRaw, setShieldedRaw] = useState<bigint | null>(null);
-  const [shieldedLoading, setShieldedLoading] = useState(false);
   const [tx, setTx] = useState<TxState>({ pending: false });
+
+  // Shielded (private STRK20) balance via TanStack Query. Reading it opens a
+  // wallet consent prompt, so the query is deliberately quiet: it fetches once
+  // when the wallet becomes ready and thereafter only on deliberate actions
+  // (sidebar refresh button, post-confirm). No refetch on window focus,
+  // reconnect, remount, or interval — tab switches never prompt.
+  const shieldedQuery = useQuery({
+    queryKey: ["shielded-balance", address],
+    queryFn: async (): Promise<bigint | null> => {
+      const acct = wallet.getAccount();
+      if (!acct || typeof acct.strk20Balances !== "function") return null;
+      try {
+        const res = await acct.strk20Balances([STRK_ADDRESS]);
+        const entry = res.find((b) => b.token.toLowerCase() === STRK_ADDRESS.toLowerCase()) ?? res[0];
+        return entry ? BigInt(entry.balance) : 0n;
+      } catch {
+        // Consent rejected or wallet unreachable — show "—" until the user
+        // deliberately refreshes. Never auto-retry (that would re-prompt).
+        return null;
+      }
+    },
+    enabled: ready && !!address,
+    staleTime: Infinity,
+    gcTime: 30 * 60 * 1000,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    refetchOnMount: false,
+    retry: false,
+  });
+  const shieldedRaw = shieldedQuery.data ?? null;
+  const shieldedLoading = shieldedQuery.isFetching;
 
   const reloadInfo = useCallback(() => {
     if (!address) return;
@@ -77,39 +107,6 @@ export default function BusinessPage() {
   useEffect(() => {
     reloadInfo();
   }, [reloadInfo]);
-
-  // Shielded (private STRK20) balance for the sidebar card. Reading it opens a
-  // wallet consent prompt, so it must be requested deliberately and exactly
-  // once per account: the effect below must not re-fire on re-renders (a fresh
-  // prompt per render was seen as an endless "share balance" loop). Failures
-  // show "—" rather than nagging the user.
-  const shieldedInFlight = useRef(false);
-  const shieldedFetchedFor = useRef<string | null>(null);
-  const refreshShielded = useCallback(async (force = false) => {
-    if (shieldedInFlight.current) return;
-    const acct = wallet.getAccount();
-    if (!acct || typeof acct.strk20Balances !== "function") return;
-    if (!force && shieldedFetchedFor.current === acct.address) return;
-    shieldedInFlight.current = true;
-    setShieldedLoading(true);
-    try {
-      const res = await acct.strk20Balances([STRK_ADDRESS]);
-      const entry = res.find((b) => b.token.toLowerCase() === STRK_ADDRESS.toLowerCase()) ?? res[0];
-      setShieldedRaw(entry ? BigInt(entry.balance) : 0n);
-    } catch {
-      setShieldedRaw(null);
-    } finally {
-      // Mark as fetched even on failure (e.g. user rejected the consent
-      // prompt) so renders never re-trigger the prompt automatically.
-      shieldedFetchedFor.current = acct.address;
-      shieldedInFlight.current = false;
-      setShieldedLoading(false);
-    }
-  }, [wallet.getAccount]);
-
-  useEffect(() => {
-    if (ready) void refreshShielded();
-  }, [ready, refreshShielded]);
 
   const runTx = useCallback(
     async (entrypoint: "register_business" | "set_auditor", calldata: string[]) => {
@@ -147,7 +144,7 @@ export default function BusinessPage() {
         onRefreshBalance={reloadInfo}
         shieldedBalance={shieldedRaw !== null ? formatNumber(shieldedRaw) : null}
         shieldedLoading={shieldedLoading}
-        onRefreshShielded={() => void refreshShielded(true)}
+        onRefreshShielded={() => void shieldedQuery.refetch()}
         activeView={activeView}
         onNavigate={setActiveView}
         isLocked={!isDashboardReady}
@@ -248,20 +245,14 @@ export default function BusinessPage() {
                 shieldedRaw={shieldedRaw}
                 onPublicBalanceChanged={() => {
                   reloadInfo();
-                  void refreshShielded(true);
                   // The public RPC can lag the wallet/relayer view of
-                  // confirmation, and new shield notes mature ~10 blocks
-                  // before the wallet reports them — retry both reads so the
-                  // sidebar catches up without a manual refresh.
-                  window.setTimeout(() => {
-                    reloadInfo();
-                    void refreshShielded(true);
-                  }, 45_000);
-                  window.setTimeout(() => {
-                    reloadInfo();
-                    void refreshShielded(true);
-                  }, 120_000);
+                  // confirmation — retry the RPC-only read so the sidebar
+                  // catches up without a manual refresh. No wallet reads here
+                  // (those prompt for consent).
+                  window.setTimeout(() => reloadInfo(), 45_000);
+                  window.setTimeout(() => reloadInfo(), 120_000);
                 }}
+                onShieldedBalanceChanged={() => void shieldedQuery.refetch()}
               />
             </div>
 
