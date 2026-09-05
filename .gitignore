@@ -30,3 +30,13 @@ next-env.d.ts
 # starknet / scarb / foundry
 contracts/target/
 contracts/.snfoundry_cache/
+
+# --- secrets & account artifacts (never commit) ---
+# starkli account files can contain private keys depending on how they're
+# exported; only the public variant was ever committed, and it's removed.
+starkli-account.json
+*.account.json
+accounts/
+keystore.json
+# retro demo notes that once contained a viewing key
+report.md

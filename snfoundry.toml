@@ -1,3 +1,6 @@
 [sncast.sepolia]
-url = "https://starknet-sepolia.g.alchemy.com/starknet/version/rpc/v0_10/HgJGTDMXxJmscfyz5xW2q"
+# RPC URL without the API key on purpose — this file is public on GitHub.
+# The real URL (with key) lives in .env and apps/web/.env.local, both gitignored.
+# For sncast, pass it explicitly: sncast --url "$STARKNET_RPC_URL" ...
+url = "https://starknet-sepolia.g.alchemy.com/starknet/version/rpc/v0_10/<YOUR_ALCHEMY_KEY>"
 account = "starkaudit_sepolia"
