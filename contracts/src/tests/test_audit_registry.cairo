@@ -150,6 +150,17 @@ fn test_set_duplicate_window_not_auditor_reverts() {
 }
 
 #[test]
+fn test_duplicate_window_default_and_set() {
+    let (addr, dispatcher) = deploy_registry();
+    // Default is 7 days (604800 seconds) from constructor
+    assert(dispatcher.get_duplicate_window() == 604800_u64, 'default window 7d');
+    start_cheat_caller_address(addr, AUDITOR());
+    dispatcher.set_duplicate_window(100);
+    stop_cheat_caller_address(addr);
+    assert(dispatcher.get_duplicate_window() == 100_u64, 'window updated');
+}
+
+#[test]
 #[should_panic(expected: ('NOT_AUDITOR',))]
 fn test_flag_exception_not_auditor_reverts() {
     let (_, dispatcher) = deploy_registry();

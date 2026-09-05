@@ -1,7 +1,8 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
-import { WalletAccount } from "starknet"
+import { WalletAccountV6 } from "starknet"
+import { StarknetInjectedWallet } from "@starknet-io/get-starknet-wallet-standard"
 import { getStarknet } from "@starknet-io/get-starknet-core"
 import type { StarknetWindowObject } from "@starknet-io/get-starknet-core"
 import { getProvider } from "@/lib/starknet"
@@ -106,12 +107,18 @@ export function useWallet() {
   }, [])
 
   // Account bound to the connected wallet for signing transactions.
-  const getAccount = useCallback((): WalletAccount | undefined => {
+  // WalletAccountV6 adds the STRK20 privacy methods (strk20InvokeTransaction,
+  // strk20Balances) on top of the classic execute() used by the registry panel.
+  const getAccount = useCallback((): WalletAccountV6 | undefined => {
     const { address, wallet } = stateRef.current
     if (!address || !wallet) return undefined
-    return new WalletAccount({
+    return new WalletAccountV6({
       provider: getProvider(),
-      walletProvider: wallet as unknown as Parameters<typeof WalletAccount.connect>[1],
+      // WalletAccountV6 requires a Wallet Standard wallet (probes
+      // features["standard:events"]) — wrap the injected StarknetWindowObject.
+      // Cast: core 4.x and wallet-standard 6.x pin different @starknet-io/types-js
+      // versions, so TS sees two nominally distinct StarknetWindowObject types.
+      walletProvider: new StarknetInjectedWallet(wallet as never),
       address,
       cairoVersion: "1",
     })

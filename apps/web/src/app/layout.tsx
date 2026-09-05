@@ -2,7 +2,7 @@ import type { Metadata } from "next"
 import { Geist, Geist_Mono } from "next/font/google"
 import "./globals.css"
 import { cn } from "@/lib/utils"
-import { SiteNav } from "@/components/site-nav"
+import { Providers } from "@/components/providers"
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -24,8 +24,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" className={cn(geistSans.variable, geistMono.variable, "dark font-sans")} suppressHydrationWarning>
       <body className="min-h-full flex flex-col">
-        <SiteNav />
-        <main className="flex flex-1 flex-col">{children}</main>
+        <Providers>
+          {children}
+        </Providers>
       </body>
     </html>
   )

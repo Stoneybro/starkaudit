@@ -106,6 +106,20 @@ export async function getThreshold(provider: RpcProvider): Promise<{ commitment:
   return { commitment: commitment[0] ?? "0x0", version: BigInt(version[0] ?? 0).toString() }
 }
 
+export async function getDuplicateWindow(provider: RpcProvider): Promise<string | null> {
+  try {
+    const res = (await provider.callContract({
+      contractAddress: REGISTRY_ADDRESS,
+      entrypoint: "get_duplicate_window",
+      calldata: [],
+    })) as unknown as string[]
+    return BigInt(res[0] ?? 0).toString()
+  } catch {
+    // Older on-chain deployment predates the get_duplicate_window view.
+    return null
+  }
+}
+
 export async function isRegistered(provider: RpcProvider, address: string): Promise<boolean> {
   const res = (await provider.callContract({
     contractAddress: REGISTRY_ADDRESS,

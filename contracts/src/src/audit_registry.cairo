@@ -82,6 +82,7 @@ pub trait IAuditRegistry<T> {
     fn is_registered(self: @T, addr: ContractAddress) -> bool;
     fn get_threshold_commitment(self: @T) -> felt252;
     fn get_threshold_version(self: @T) -> u64;
+    fn get_duplicate_window(self: @T) -> u64;
     fn get_auditor(self: @T, business: ContractAddress) -> ContractAddress;
 }
 
@@ -263,6 +264,10 @@ pub mod AuditRegistry {
 
         fn get_threshold_version(self: @ContractState) -> u64 {
             self.threshold_version.read()
+        }
+
+        fn get_duplicate_window(self: @ContractState) -> u64 {
+            self.duplicate_window.read()
         }
 
         fn get_auditor(self: @ContractState, business: ContractAddress) -> ContractAddress {
