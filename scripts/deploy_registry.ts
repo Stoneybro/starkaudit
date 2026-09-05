@@ -21,8 +21,8 @@ async function main() {
   await provider.waitForTransaction(declareTx.transaction_hash)
   console.log(`Declared class ${declareTx.class_hash}`)
 
-  console.log("Deploying with auditor =", ACCOUNT_ADDRESS)
-  const deployTx: any = await account.deployContract({ classHash: declareTx.class_hash, constructorCalldata: [ACCOUNT_ADDRESS] }, { tip: 0n })
+  console.log("Deploying (no global auditor — each business names its own via set_auditor)")
+  const deployTx: any = await account.deployContract({ classHash: declareTx.class_hash, constructorCalldata: [] }, { tip: 0n })
   console.log(`Deploy tx ${deployTx.transaction_hash}`)
   const receipt: any = await provider.waitForTransaction(deployTx.transaction_hash)
   const addr = receipt.contract_address ?? deployTx.contract_address

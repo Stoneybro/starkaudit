@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { Loader2, Trash2, Info, ExternalLink, ShieldCheck } from "lucide-react";
+import { Loader2, Trash2, Info, ExternalLink, ShieldCheck, Link2, Check } from "lucide-react";
 import { Field, FieldLabel, FieldGroup, FieldDescription } from "@/components/ui/field";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -21,6 +21,7 @@ import {
 import { shortHash, voyagerTx } from "@/lib/starknet";
 
 interface AuditorPanelProps {
+  businessAddress: string;
   auditor: string | null;
   txPending: boolean;
   txHash?: string;
@@ -34,12 +35,30 @@ function formatAddress(address: string) {
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
-export function AuditorPanel({ auditor, txPending, txHash, txError, onSetAuditor }: AuditorPanelProps) {
+export function AuditorPanel({ businessAddress, auditor, txPending, txHash, txError, onSetAuditor }: AuditorPanelProps) {
   const [newAddress, setNewAddress] = useState("");
   const [inputError, setInputError] = useState<string | undefined>(undefined);
   const [grantDialogOpen, setGrantDialogOpen] = useState(false);
   const [revokeDialogOpen, setRevokeDialogOpen] = useState(false);
   const [auditorToRevoke, setAuditorToRevoke] = useState<string | null>(null);
+  const [linkCopied, setLinkCopied] = useState(false);
+  const auditorLink =
+    typeof window !== "undefined" ? `${window.location.origin}/auditor/${businessAddress}` : `/auditor/${businessAddress}`;
+
+  const copyAuditorLink = async () => {
+    try {
+      await navigator.clipboard.writeText(auditorLink);
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = auditorLink;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    }
+    setLinkCopied(true);
+    window.setTimeout(() => setLinkCopied(false), 2000);
+  };
 
   const handleAddAuditor = (event: React.FormEvent) => {
     event.preventDefault();
@@ -166,6 +185,33 @@ export function AuditorPanel({ auditor, txPending, txHash, txError, onSetAuditor
               </div>
             </div>
           </CardFooter>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Auditor workspace link</CardTitle>
+            <CardDescription>
+              Share this unique link with your auditor. It opens an isolated workspace showing
+              only your business — access is granted to the wallet you assign below.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+              <code className="min-w-0 flex-1 truncate rounded-md border border-border bg-muted/30 px-3 py-2 font-mono text-xs">
+                {auditorLink}
+              </code>
+              <Button variant="outline" size="sm" className="shrink-0" onClick={() => void copyAuditorLink()}>
+                {linkCopied ? <Check className="h-4 w-4 mr-2" /> : <Link2 className="h-4 w-4 mr-2" />}
+                {linkCopied ? "Copied" : "Copy link"}
+              </Button>
+            </div>
+            {!auditor && (
+              <p className="pt-3 text-[13px] text-muted-foreground">
+                The link works once you grant access below — your auditor connects with the
+                assigned wallet or they&apos;ll see an access-denied screen.
+              </p>
+            )}
+          </CardContent>
         </Card>
 
         <Card>

@@ -118,21 +118,21 @@ Cairo is Starknet's programming language. A contract has **storage** (its own me
 
 ### AuditRegistry (`audit_registry.cairo`) — the compliance ledger
 
-Storage: the auditor's address, registered businesses, each business's chosen auditor, the threshold commitment + version, the duplicate window, all submitted results (keyed by nullifier), first-seen timestamps for duplicate detection, and the sealed-envelope material (section 8).
+Storage: registered businesses, each business's chosen auditor, per-business threshold commitments + versions, per-business duplicate windows (default 7 days), all submitted results (keyed by nullifier), per-business first-seen timestamps for duplicate detection, and the sealed-envelope material (section 8). There is no global auditor.
 
 Key functions:
 
-- `register_business()` — anyone can register *themselves* (open on purpose so demo judges can use fresh wallets). The auditor can also register someone else (`register_business_for`, auditor-only).
+- `register_business()` — anyone can register *themselves* (open on purpose so demo judges can use fresh wallets).
 - `set_auditor(auditor)` — a business names its auditor. Open by design: any wallet picks the auditor for *itself*.
-- `set_threshold_commitment(hash)` — **auditor-only**. Publishes `poseidon("starkaudit3", threshold, salt)` and bumps a version counter. The actual threshold number never goes on-chain — only the fingerprint.
-- `set_duplicate_window(seconds)` — auditor-only. How long a repeat counts as a duplicate (default 7 days = 604800 seconds).
+- `set_threshold_commitment(business, hash)` — **that business's auditor only** (`NO_AUDITOR` if the business never named one, `NOT_AUDITOR` otherwise). Publishes `poseidon("starkaudit3", threshold, salt)` and bumps that business's version counter. The actual threshold number never goes on-chain — only the fingerprint.
+- `set_duplicate_window(business, seconds)` — that business's auditor only. How long a repeat counts as a duplicate (default 7 days = 604800 seconds).
 - `submit_proof(...)` — the main event. Anyone may call it (an accepted demo trade-off, noted in code comments). Steps, in order:
   1. **Anti-replay**: each nullifier can be reported once (`ALREADY_SUBMITTED` otherwise).
   2. It stores the caller as the `business`, the note_id, both commitments, and the submitter's 1-bit `pass_claim` (their claimed verdict — the *amount* can never go on-chain because transaction data is public).
-  3. **Duplicate detection**: if this `dup_commit` was first seen within the window → `is_duplicate = true`. The contract then overrides the claim: `pass = pass_claim && !is_duplicate`. On-chain you get a trustworthy verdict — pass / fail / duplicate — with zero amounts revealed.
+  3. **Duplicate detection (per submitter business)**: if this `dup_commit` was first seen *by the same business* within that business's window → `is_duplicate = true`. The contract then overrides the claim: `pass = pass_claim && !is_duplicate`. On-chain you get a trustworthy verdict — pass / fail / duplicate — with zero amounts revealed.
   4. Emits `ProofSubmitted` (nullifier, business, pass, is_duplicate, plus the two honesty flags below).
-- `flag_exception(nullifier)` — auditor-only; raises a manual "needs attention" event.
-- View functions: `get_result`, `is_registered`, `get_auditor`, `get_threshold_commitment`, `get_threshold_version`, and the sealed-envelope functions of section 8.
+- `flag_exception(business, nullifier)` — that business's auditor only; raises a manual "needs attention" event.
+- View functions: `get_result`, `is_registered`, `get_auditor(business)`, `get_threshold_commitment(business)`, `get_threshold_version(business)`, `get_duplicate_window(business)`, and the sealed-envelope functions of section 8.
 
 Two honesty flags stored per result, both currently fixed by design:
 - `offchain_verified = true` — the *proof itself* is not yet verified on-chain (see section 9), so a backend/indexer double-checks it.
@@ -153,7 +153,7 @@ A nice robustness detail (with its own test, `test_privacy_invoke_donation_does_
 
 A minimal token with open minting, used by the test suite. Never deployed for real.
 
-The contracts are built with Scarb (Cairo's build tool; toolchain `starknet = "2.10.1"`, edition 2024_07 per `contracts/src/Scarb.toml`) and tested with **starknet-foundry (snforge)** — `contracts/src/tests/` holds 25 tests (19 for the registry, 6 for payroll) covering access control, threshold versioning, submit/duplicate/anti-replay behavior, event emission, the payroll guard rails, and the sealed-envelope rules.
+The contracts are built with Scarb (Cairo's build tool; toolchain `starknet = "2.10.1"`, edition 2024_07 per `contracts/src/Scarb.toml`) and tested with **starknet-foundry (snforge)** — `contracts/src/tests/` holds 29 tests (23 for the registry, 6 for payroll) covering per-business access control, per-business threshold versioning and duplicate isolation, submit/anti-replay behavior, event emission, the payroll guard rails, and the sealed-envelope rules.
 
 ---
 
@@ -181,7 +181,7 @@ Here's a subtle chicken-and-egg problem the code solves elegantly:
 The solution, spread across the contract, the SDK (`distribution.ts`), and three scripts:
 
 1. **The business publishes a "mailbox"** — an X25519 encryption public key — on-chain via `set_distribution_key` (script: `dist_keygen.ts`; the matching secret goes only into `.env` as `BUSINESS_DIST_SECRET`, which is gitignored).
-2. **The auditor drops a sealed envelope into that mailbox**: `share_threshold_package(...)` stores an encrypted package containing `(threshold, salt, version)` — auditor-only function. Encryption uses NaCl box (X25519 + XSalsa20-Poly1305), with a fresh one-time key and nonce per package. The 88-byte ciphertext is chopped into three 31/31/26-byte chunks because of how Starknet numbers work (that's the `eph_low/eph_high/nonce/c0/c1/c2` you see in the contract).
+2. **The business's auditor drops a sealed envelope into that mailbox**: `share_threshold_package(...)` stores an encrypted package containing `(threshold, salt, version)` — that business's auditor only. Encryption uses NaCl box (X25519 + XSalsa20-Poly1305), with a fresh one-time key and nonce per package. The 88-byte ciphertext is chopped into three 31/31/26-byte chunks because of how Starknet numbers work (that's the `eph_low/eph_high/nonce/c0/c1/c2` you see in the contract).
 3. **The business opens its own mailbox**: `sync_package.ts` reads the package from the chain, decrypts it with the secret, and then — importantly — **checks the opened numbers against the public fingerprint**: it recomputes `poseidon("starkaudit3", threshold, salt)` and refuses to continue unless it matches the on-chain commitment and the version matches the current on-chain version. A tampered, stale, or wrong package is rejected before anything uses it.
 4. The opened values are written to `threshold-package.json` (gitignored — it contains live secrets), and `stage5.ts` refuses to run without it, so **the threshold is never hardcoded anywhere**.
 

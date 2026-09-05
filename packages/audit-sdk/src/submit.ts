@@ -29,14 +29,15 @@ export async function submitProof(
 }
 
 /**
- * Flag an exception for a nullifier (auditor-only).
+ * Flag an exception for a business's nullifier — only that business's auditor.
  * Used when a nullifier is known (via business declaration or channel-open timing)
  * but no proof was submitted within the window.
  */
 export async function flagException(
   registry: Contract,
+  business: string,
   nullifier: bigint,
 ): Promise<string> {
-  const tx = await registry.flag_exception(nullifier)
+  const tx = await registry.flag_exception(business, nullifier)
   return tx.transaction_hash
 }

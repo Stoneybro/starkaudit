@@ -1,8 +1,13 @@
 // StarkAudit — AuditRegistry Contract
 // Stores audit proof submissions, duplicate detection, and exception flags.
-// Spec: proposedspec.md §5
+// Per-business model: no global auditor. Each business names its own auditor
+// via set_auditor, and only that auditor may set that business's threshold,
+// duplicate window, sealed packages, and flags.
 
 use starknet::ContractAddress;
+
+// Default duplicate window for businesses that never had one set explicitly.
+pub const DEFAULT_DUPLICATE_WINDOW: u64 = 604800_u64; // 7 days
 
 // ── Data Structures ──────────────────────────────────────────────────────────
 
@@ -35,11 +40,15 @@ pub struct ProofSubmitted {
 #[derive(Drop, starknet::Event)]
 pub struct ExceptionFlagged {
     #[key]
+    pub business: ContractAddress,
+    #[key]
     pub nullifier: felt252,
 }
 
 #[derive(Drop, starknet::Event)]
 pub struct ThresholdUpdated {
+    #[key]
+    pub business: ContractAddress,
     pub version: u64,
     pub hash: felt252,
 }
@@ -57,10 +66,17 @@ pub struct AuditorSet {
     pub auditor: ContractAddress,
 }
 
+#[derive(Drop, starknet::Event)]
+pub struct DuplicateWindowUpdated {
+    #[key]
+    pub business: ContractAddress,
+    pub window_seconds: u64,
+}
+
 // Threshold distribution: the auditor never sends (threshold, salt) manually.
 // Each business publishes an X25519 distribution pubkey (32 bytes as low/high
-// u128 felts); the auditor seals the threshold package with nacl box and the
-// contract stores the sealed felts bound to the current threshold version.
+// u128 felts); the business's auditor seals the threshold package with nacl box
+// and the contract stores the sealed felts bound to that business's threshold version.
 // Plaintext layout (72 bytes): threshold_u256_be32 || salt_felt_be32 ||
 // version_u64_be8. Ciphertext (nacl box overhead 16) is 88 bytes → 3 felts of
 // 31/31/26 bytes big-endian; the 24-byte nonce fits one felt; the 32-byte
@@ -102,10 +118,9 @@ pub struct ThresholdPackageShared {
 #[starknet::interface]
 pub trait IAuditRegistry<T> {
     fn register_business(ref self: T);
-    fn register_business_for(ref self: T, addr: ContractAddress);
     fn set_auditor(ref self: T, auditor: ContractAddress);
-    fn set_threshold_commitment(ref self: T, hash: felt252);
-    fn set_duplicate_window(ref self: T, window_seconds: u64);
+    fn set_threshold_commitment(ref self: T, business: ContractAddress, hash: felt252);
+    fn set_duplicate_window(ref self: T, business: ContractAddress, window_seconds: u64);
     fn submit_proof(
         ref self: T,
         nullifier: felt252,
@@ -117,12 +132,12 @@ pub trait IAuditRegistry<T> {
         public_inputs: Span<felt252>,
         pass_claim: bool,
     );
-    fn flag_exception(ref self: T, nullifier: felt252);
+    fn flag_exception(ref self: T, business: ContractAddress, nullifier: felt252);
     fn get_result(self: @T, nullifier: felt252) -> AuditResult;
     fn is_registered(self: @T, addr: ContractAddress) -> bool;
-    fn get_threshold_commitment(self: @T) -> felt252;
-    fn get_threshold_version(self: @T) -> u64;
-    fn get_duplicate_window(self: @T) -> u64;
+    fn get_threshold_commitment(self: @T, business: ContractAddress) -> felt252;
+    fn get_threshold_version(self: @T, business: ContractAddress) -> u64;
+    fn get_duplicate_window(self: @T, business: ContractAddress) -> u64;
     fn get_auditor(self: @T, business: ContractAddress) -> ContractAddress;
     fn set_distribution_key(ref self: T, low: felt252, high: felt252);
     fn get_distribution_key(self: @T, business: ContractAddress) -> (felt252, felt252);
@@ -145,22 +160,22 @@ pub trait IAuditRegistry<T> {
 
 #[starknet::contract]
 pub mod AuditRegistry {
-    use super::{AuditResult, IAuditRegistry, ProofSubmitted, ExceptionFlagged, ThresholdUpdated, BusinessRegistered, AuditorSet, DistributionKey, DistributionKeySet, ThresholdPackage, ThresholdPackageShared};
+    use super::{AuditResult, IAuditRegistry, ProofSubmitted, ExceptionFlagged, ThresholdUpdated, BusinessRegistered, AuditorSet, DuplicateWindowUpdated, DistributionKey, DistributionKeySet, ThresholdPackage, ThresholdPackageShared, DEFAULT_DUPLICATE_WINDOW};
     use starknet::{ContractAddress, get_caller_address, get_block_timestamp};
     use starknet::storage::{Map, StoragePointerReadAccess, StoragePointerWriteAccess, StoragePathEntry};
 
     #[storage]
     struct Storage {
-        auditor: ContractAddress, // global deployer, kept for admin
         businesses: Map<ContractAddress, bool>,
-        auditor_of: Map<ContractAddress, ContractAddress>, // business -> chosen auditor (demo: any address)
-        threshold_commitment: felt252,
-        threshold_version: u64,
-        duplicate_window: u64,          // seconds
+        auditor_of: Map<ContractAddress, ContractAddress>, // business -> chosen auditor
+        threshold_commitment: Map<ContractAddress, felt252>, // business -> commitment
+        threshold_version: Map<ContractAddress, u64>,        // business -> version
+        duplicate_window: Map<ContractAddress, u64>,         // business -> seconds
+        duplicate_window_set: Map<ContractAddress, bool>,    // business -> explicit window set (else DEFAULT)
         results: Map<felt252, AuditResult>,    // nullifier → AuditResult
         result_exists: Map<felt252, bool>,     // anti-replay guard
-        dup_seen: Map<felt252, u64>,           // dup_commit → timestamp first seen
-        dup_seen_exists: Map<felt252, bool>,   // dup_commit → ever seen (timestamp 0 is valid, so 0 is no sentinel)
+        dup_seen: Map<(ContractAddress, felt252), u64>,         // (business, dup_commit) → timestamp first seen
+        dup_seen_exists: Map<(ContractAddress, felt252), bool>, // (business, dup_commit) → ever seen
         distribution_keys: Map<ContractAddress, DistributionKey>, // business → X25519 distribution pubkey
         distribution_key_exists: Map<ContractAddress, bool>,
         packages: Map<(ContractAddress, u64), ThresholdPackage>, // (business, threshold version) → sealed package
@@ -177,57 +192,57 @@ pub mod AuditRegistry {
         ThresholdUpdated: ThresholdUpdated,
         BusinessRegistered: BusinessRegistered,
         AuditorSet: AuditorSet,
+        DuplicateWindowUpdated: DuplicateWindowUpdated,
         DistributionKeySet: DistributionKeySet,
         ThresholdPackageShared: ThresholdPackageShared,
     }
 
     #[constructor]
-    fn constructor(ref self: ContractState, auditor: ContractAddress) {
-        self.auditor.write(auditor);
-        // Default: 7 days duplicate window
-        self.duplicate_window.write(604800_u64);
+    fn constructor(ref self: ContractState) {
+        // No global auditor. Each business names its own auditor via set_auditor.
+        // Per-business duplicate windows fall back to DEFAULT_DUPLICATE_WINDOW
+        // until that business's auditor sets one explicitly.
     }
 
     #[abi(embed_v0)]
     impl AuditRegistryImpl of IAuditRegistry<ContractState> {
         /// Register a business address — open to anyone (business self-registers).
         /// Any wallet can call register_business() and it registers get_caller_address().
-        /// The auditor-only helper register_business_for is kept for the auditor to pre-register in demos.
         fn register_business(ref self: ContractState) {
             let caller = get_caller_address();
             self.businesses.entry(caller).write(true);
             self.emit(BusinessRegistered { business: caller });
         }
 
-        fn register_business_for(ref self: ContractState, addr: ContractAddress) {
-            self._assert_auditor();
-            self.businesses.entry(addr).write(true);
-            self.emit(BusinessRegistered { business: addr });
-        }
-
         /// Business sets its chosen auditor — demo-intentional open behavior:
         /// any caller may set auditor_of[caller]. No registration check on purpose,
         /// so judges can test with fresh wallets without a pre-registration step.
+        /// Only the business itself can (re)set its auditor; the auditor cannot
+        /// seize other businesses.
         fn set_auditor(ref self: ContractState, auditor: ContractAddress) {
             let caller = get_caller_address();
             self.auditor_of.entry(caller).write(auditor);
             self.emit(AuditorSet { business: caller, auditor });
         }
 
-        /// Set threshold commitment — auditor-only, versioned.
+        /// Set threshold commitment for a business — only that business's auditor.
+        /// The business must have named an auditor first (else NO_AUDITOR).
+        /// Version is per-business: each set bumps auditor_of[business]'s version.
         /// Business must know threshold out-of-band to build proofs.
-        fn set_threshold_commitment(ref self: ContractState, hash: felt252) {
-            self._assert_auditor();
-            let version = self.threshold_version.read() + 1;
-            self.threshold_version.write(version);
-            self.threshold_commitment.write(hash);
-            self.emit(ThresholdUpdated { version, hash });
+        fn set_threshold_commitment(ref self: ContractState, business: ContractAddress, hash: felt252) {
+            self._assert_business_auditor(business);
+            let version = self.threshold_version.entry(business).read() + 1;
+            self.threshold_version.entry(business).write(version);
+            self.threshold_commitment.entry(business).write(hash);
+            self.emit(ThresholdUpdated { business, version, hash });
         }
 
-        /// Set duplicate detection window in seconds.
-        fn set_duplicate_window(ref self: ContractState, window_seconds: u64) {
-            self._assert_auditor();
-            self.duplicate_window.write(window_seconds);
+        /// Set duplicate detection window for a business — only that business's auditor.
+        fn set_duplicate_window(ref self: ContractState, business: ContractAddress, window_seconds: u64) {
+            self._assert_business_auditor(business);
+            self.duplicate_window.entry(business).write(window_seconds);
+            self.duplicate_window_set.entry(business).write(true);
+            self.emit(DuplicateWindowUpdated { business, window_seconds });
         }
 
         /// Submit an audit proof for a nullifier.
@@ -239,11 +254,14 @@ pub mod AuditRegistry {
         /// never go on-chain — calldata is public). The contract enforces
         /// duplicate-override: `pass = pass_claim && !is_duplicate`. The auditor
         /// re-verifies the claim off-chain against the commitments.
+        /// Duplicate tracking is scoped per submitter business: the same
+        /// dup_commit from two different businesses does NOT collide. The
+        /// window applied is the submitter's own (auditor-set or default).
         /// Steps:
         ///   0. Anti-replay — one result per nullifier
         ///   1. Storage check — enc_amount vs pool payload (offchain_verified if no pool view)
         ///   2. Proof verification (offchain_verified if no on-chain verifier deployed)
-        ///   3. Duplicate detection
+        ///   3. Duplicate detection (per-business)
         ///   4. Store + emit
         fn submit_proof(
             ref self: ContractState,
@@ -270,15 +288,17 @@ pub mod AuditRegistry {
             //   assert(verifier.verify(proof, public_inputs), 'PROOF_INVALID');
             // Until then, store proof as-is (offchain_verified path).
 
-            // Step 3: duplicate detection
+            // Step 3: duplicate detection (per submitter business)
+            let business = get_caller_address();
             let now = get_block_timestamp();
-            let window = self.duplicate_window.read();
-            let first_seen = self.dup_seen.entry(dup_commit).read();
-            let seen_before = self.dup_seen_exists.entry(dup_commit).read();
+            let window = self._get_window(business);
+            let dup_key = (business, dup_commit);
+            let first_seen = self.dup_seen.entry(dup_key).read();
+            let seen_before = self.dup_seen_exists.entry(dup_key).read();
             let is_duplicate = seen_before && (now - first_seen) <= window;
             if !seen_before {
-                self.dup_seen.entry(dup_commit).write(now);
-                self.dup_seen_exists.entry(dup_commit).write(true);
+                self.dup_seen.entry(dup_key).write(now);
+                self.dup_seen_exists.entry(dup_key).write(true);
             }
 
             // pass = submitter's threshold claim, overridden to false on duplicate.
@@ -287,7 +307,6 @@ pub mod AuditRegistry {
             let pass = pass_claim && !is_duplicate;
 
             // Step 4: store + emit
-            let business = get_caller_address();
             let result = AuditResult {
                 business,
                 note_id,
@@ -304,10 +323,10 @@ pub mod AuditRegistry {
             self.emit(ProofSubmitted { nullifier, business, pass, is_duplicate, unverified_binding: false, offchain_verified });
         }
 
-        /// Flag an exception for a nullifier (auditor-only, manual for sprint).
-        fn flag_exception(ref self: ContractState, nullifier: felt252) {
-            self._assert_auditor();
-            self.emit(ExceptionFlagged { nullifier });
+        /// Flag an exception for a business's nullifier — only that business's auditor.
+        fn flag_exception(ref self: ContractState, business: ContractAddress, nullifier: felt252) {
+            self._assert_business_auditor(business);
+            self.emit(ExceptionFlagged { business, nullifier });
         }
 
         fn get_result(self: @ContractState, nullifier: felt252) -> AuditResult {
@@ -319,16 +338,16 @@ pub mod AuditRegistry {
             self.businesses.entry(addr).read()
         }
 
-        fn get_threshold_commitment(self: @ContractState) -> felt252 {
-            self.threshold_commitment.read()
+        fn get_threshold_commitment(self: @ContractState, business: ContractAddress) -> felt252 {
+            self.threshold_commitment.entry(business).read()
         }
 
-        fn get_threshold_version(self: @ContractState) -> u64 {
-            self.threshold_version.read()
+        fn get_threshold_version(self: @ContractState, business: ContractAddress) -> u64 {
+            self.threshold_version.entry(business).read()
         }
 
-        fn get_duplicate_window(self: @ContractState) -> u64 {
-            self.duplicate_window.read()
+        fn get_duplicate_window(self: @ContractState, business: ContractAddress) -> u64 {
+            self._get_window(business)
         }
 
         fn get_auditor(self: @ContractState, business: ContractAddress) -> ContractAddress {
@@ -337,7 +356,7 @@ pub mod AuditRegistry {
 
         /// Publish the caller's X25519 distribution pubkey (low/high u128 felts).
         /// Open self-serve like register_business: any caller sets its own key.
-        /// The auditor seals each threshold package to this key — no manual delivery.
+        /// The business's auditor seals each threshold package to this key — no manual delivery.
         fn set_distribution_key(ref self: ContractState, low: felt252, high: felt252) {
             let caller = get_caller_address();
             self.distribution_keys.entry(caller).write(DistributionKey { low, high });
@@ -355,10 +374,10 @@ pub mod AuditRegistry {
             self.distribution_key_exists.entry(business).read()
         }
 
-        /// Store the sealed threshold package for a business, bound to the
-        /// CURRENT threshold version. Auditor-only. The backend decrypts and
-        /// checks poseidon(package) against the on-chain commitment + version,
-        /// so a stale or mismatched package can never be used silently.
+        /// Store the sealed threshold package for a business, bound to that
+        /// business's CURRENT threshold version. Only that business's auditor.
+        /// The backend decrypts and checks poseidon(package) against the on-chain
+        /// commitment + version, so a stale or mismatched package can never be used silently.
         fn share_threshold_package(
             ref self: ContractState,
             business: ContractAddress,
@@ -369,8 +388,8 @@ pub mod AuditRegistry {
             c1: felt252,
             c2: felt252,
         ) {
-            self._assert_auditor();
-            let version = self.threshold_version.read();
+            self._assert_business_auditor(business);
+            let version = self.threshold_version.entry(business).read();
             assert(version != 0, 'NO_THRESHOLD');
             assert(self.distribution_key_exists.entry(business).read(), 'NO_DIST_KEY');
             self.packages.entry((business, version)).write(ThresholdPackage { eph_low, eph_high, nonce, c0, c1, c2 });
@@ -393,8 +412,20 @@ pub mod AuditRegistry {
 
     #[generate_trait]
     impl InternalImpl of InternalTrait {
-        fn _assert_auditor(self: @ContractState) {
-            assert(get_caller_address() == self.auditor.read(), 'NOT_AUDITOR');
+        fn _assert_business_auditor(self: @ContractState, business: ContractAddress) {
+            let auditor = self.auditor_of.entry(business).read();
+            // Zero address means the business never named an auditor.
+            let zero: ContractAddress = 0.try_into().unwrap();
+            assert(auditor != zero, 'NO_AUDITOR');
+            assert(get_caller_address() == auditor, 'NOT_AUDITOR');
+        }
+
+        fn _get_window(self: @ContractState, business: ContractAddress) -> u64 {
+            if self.duplicate_window_set.entry(business).read() {
+                self.duplicate_window.entry(business).read()
+            } else {
+                DEFAULT_DUPLICATE_WINDOW
+            }
         }
     }
 }

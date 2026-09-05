@@ -13,6 +13,9 @@ import { shortHash, voyagerTx } from "@/lib/starknet";
 import { randomFeltHex } from "@/lib/distribution";
 
 interface ThresholdsPanelProps {
+  businesses: string[];
+  selectedBusiness: string | null;
+  onSelectBusiness: (business: string) => void;
   threshold: { commitment: string; version: string } | null;
   loading: boolean;
   error?: string;
@@ -22,9 +25,9 @@ interface ThresholdsPanelProps {
   txHash?: string;
   txError?: string;
   onRefresh: () => void;
-  onSetThreshold: (commitmentHex: string, thresholdWeiHex: string, saltHex: string) => void;
-  onSetWindow: (seconds: string) => void;
-  onFlagException: (nullifierHex: string) => void;
+  onSetThreshold: (business: string, commitmentHex: string, thresholdWeiHex: string, saltHex: string) => void;
+  onSetWindow: (business: string, seconds: string) => void;
+  onFlagException: (business: string, nullifierHex: string) => void;
 }
 
 // poseidon(THRESHOLD_TAG, threshold_wei, auditor_salt) — must match
@@ -67,6 +70,9 @@ function isThresholdCommitted(threshold: { commitment: string } | null): boolean
  * Numeric values never go on-chain — only hashes, versions and seconds.
  */
 export function ThresholdsPanel({
+  businesses,
+  selectedBusiness,
+  onSelectBusiness,
   threshold,
   loading,
   error,
@@ -92,8 +98,28 @@ export function ThresholdsPanel({
         <div className="flex flex-col gap-1">
           <h2 className="text-2xl font-semibold tracking-tight">Test Suite</h2>
           <p className="text-sm text-muted-foreground">
-            Configure audit thresholds. Values are committed as hashes — never published on-chain.
+            Per-business thresholds — each business’s auditor commits hashes for that business only.
           </p>
+          {businesses.length > 1 && (
+            <label className="flex items-center gap-2 pt-2 text-sm text-muted-foreground">
+              Business
+              <select
+                className="rounded-md border border-border bg-background px-2 py-1 font-mono text-xs text-foreground"
+                value={selectedBusiness ?? ""}
+                onChange={(e) => onSelectBusiness(e.target.value)}
+                disabled={txPending}
+              >
+                {businesses.map((b) => (
+                  <option key={b} value={b}>{b}</option>
+                ))}
+              </select>
+            </label>
+          )}
+          {businesses.length === 0 && (
+            <p className="text-sm text-muted-foreground pt-2">
+              No businesses discovered yet — register one from the Business workspace first.
+            </p>
+          )}
         </div>
         <Button variant="outline" size="sm" className="shrink-0" onClick={onRefresh} disabled={refreshing}>
           <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? "animate-spin" : ""}`} />
@@ -255,9 +281,9 @@ export function ThresholdsPanel({
       {configuring === "t1" && (
         <ThresholdDialog
           onClose={() => setConfiguring(null)}
-          pending={txPending}
+          pending={txPending || !selectedBusiness}
           onSave={(commitment, thresholdWeiHex, saltHex) => {
-            onSetThreshold(commitment, thresholdWeiHex, saltHex);
+            if (selectedBusiness) onSetThreshold(selectedBusiness, commitment, thresholdWeiHex, saltHex);
             setConfiguring(null);
           }}
         />
@@ -267,19 +293,20 @@ export function ThresholdsPanel({
           key={windowSeconds ?? "unknown"}
           initialSeconds={windowSeconds ?? "604800"}
           onClose={() => setConfiguring(null)}
-          pending={txPending}
+          pending={txPending || !selectedBusiness}
           onSave={(seconds) => {
-            onSetWindow(seconds);
+            if (selectedBusiness) onSetWindow(selectedBusiness, seconds);
             setConfiguring(null);
           }}
         />
       )}
       {configuring === "exceptions" && (
         <ExceptionDialog
+          initialBusiness={selectedBusiness ?? ""}
           onClose={() => setConfiguring(null)}
           pending={txPending}
-          onSave={(nullifier) => {
-            onFlagException(nullifier);
+          onSave={(business, nullifier) => {
+            onFlagException(business, nullifier);
             setConfiguring(null);
           }}
         />
@@ -461,24 +488,31 @@ function WindowDialog({
 }
 
 function ExceptionDialog({
+  initialBusiness,
   onClose,
   onSave,
   pending,
 }: {
+  initialBusiness: string;
   onClose: () => void;
-  onSave: (nullifier: string) => void;
+  onSave: (business: string, nullifier: string) => void;
   pending: boolean;
 }) {
+  const [business, setBusiness] = useState(initialBusiness);
   const [nullifier, setNullifier] = useState("");
   const [formError, setFormError] = useState<string | undefined>(undefined);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!FELT_RE.test(business.trim())) {
+      setFormError("Enter a valid business address (0x…).");
+      return;
+    }
     if (!FELT_RE.test(nullifier.trim())) {
       setFormError("Enter a valid nullifier felt (0x…).");
       return;
     }
-    onSave(nullifier.trim());
+    onSave(business.trim(), nullifier.trim());
   };
 
   return (
@@ -488,6 +522,20 @@ function ExceptionDialog({
           <DialogTitle>Flag exception</DialogTitle>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="p-6 space-y-5">
+          <div className="space-y-1.5">
+            <Label>Business</Label>
+            <Input
+              required
+              value={business}
+              onChange={(e) => setBusiness(e.target.value)}
+              placeholder="0x…"
+              className="font-mono"
+              spellCheck={false}
+              autoComplete="off"
+              disabled={pending}
+            />
+            <p className="text-[13px] text-muted-foreground">Only that business’s auditor can flag (NOT_AUDITOR otherwise).</p>
+          </div>
           <div className="space-y-1.5">
             <Label>Nullifier</Label>
             <Input
@@ -500,7 +548,7 @@ function ExceptionDialog({
               autoComplete="off"
               disabled={pending}
             />
-            <p className="text-[13px] text-muted-foreground">Only the nullifier key is stored. Non-auditor wallets revert.</p>
+            <p className="text-[13px] text-muted-foreground">Only the business + nullifier keys are stored.</p>
           </div>
           {formError && <p className="text-xs text-destructive">{formError}</p>}
           <div className="pt-2 flex justify-end gap-3">

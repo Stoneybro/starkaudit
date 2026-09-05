@@ -13,6 +13,7 @@ import { splitPubkey } from "../packages/audit-sdk/src/distribution.js"
 const RPC_URL = process.env.STARKNET_RPC_URL!
 const ACCOUNT_ADDRESS = process.env.ACCOUNT_ADDRESS!
 const ACCOUNT_PK = process.env.ACCOUNT_PRIVATE_KEY!
+// Env-first so a redeploy is picked up automatically; old address kept as fallback.
 const REGISTRY = process.env.AUDIT_REGISTRY_ADDRESS || "0x1ce7138415c267093450c95241c0a02e1e5cd1b4db52452149fa05f36d6ead6"
 
 async function main() {

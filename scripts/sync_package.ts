@@ -28,12 +28,12 @@ function hexBytes(hex: string): Uint8Array {
 async function main() {
   const provider = new RpcProvider({ nodeUrl: RPC_URL })
 
-  const versionRes: any = await provider.callContract({ contractAddress: REGISTRY, entrypoint: "get_threshold_version", calldata: [] })
+  const versionRes: any = await provider.callContract({ contractAddress: REGISTRY, entrypoint: "get_threshold_version", calldata: [ACCOUNT_ADDRESS] })
   const version = BigInt(versionRes[0] ?? versionRes)
   if (version === 0n) throw new Error("No threshold committed on-chain yet — auditor must configure T1 first")
-  console.log(`On-chain threshold version ${version}`)
+  console.log(`On-chain threshold version ${version} for ${ACCOUNT_ADDRESS}`)
 
-  const tcRes: any = await provider.callContract({ contractAddress: REGISTRY, entrypoint: "get_threshold_commitment", calldata: [] })
+  const tcRes: any = await provider.callContract({ contractAddress: REGISTRY, entrypoint: "get_threshold_commitment", calldata: [ACCOUNT_ADDRESS] })
   const onchainTc = BigInt(tcRes[0] ?? tcRes)
 
   let pkgRes: any

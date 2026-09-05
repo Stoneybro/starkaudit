@@ -12,10 +12,10 @@ export type DistributionRow = {
   business: string
   hasKey: boolean
   shared: boolean
+  version: string
 }
 
 interface DistributionPanelProps {
-  version: string | null;
   rows: DistributionRow[];
   loading: boolean;
   error?: string;
@@ -34,7 +34,6 @@ interface DistributionPanelProps {
  * sealed felts; the numeric threshold stays in the T1 dialog session.
  */
 export function DistributionPanel({
-  version,
   rows,
   loading,
   error,
@@ -53,8 +52,7 @@ export function DistributionPanel({
         <div className="flex flex-col gap-1">
           <h2 className="text-2xl font-semibold tracking-tight">Distribution</h2>
           <p className="text-sm text-muted-foreground">
-            Sealed threshold packages per business — no manual delivery.
-            {version !== null ? ` Current version v${version}.` : ""}
+            Sealed threshold packages per business — each business has its own version.
           </p>
         </div>
         <div className="flex shrink-0 gap-2">
@@ -114,7 +112,7 @@ export function DistributionPanel({
                     )}
                     {row.shared ? (
                       <span className="flex items-center gap-1.5 text-primary/70">
-                        <PackageCheck className="h-3.5 w-3.5" /> Package v{version} sealed
+                        <PackageCheck className="h-3.5 w-3.5" /> Package v{row.version} sealed
                       </span>
                     ) : (
                       row.hasKey && (

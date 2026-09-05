@@ -172,7 +172,7 @@ export default function BusinessPage() {
 
             {isDashboardReady && (
               <button
-                onClick={() => router.push("/auditor")}
+                onClick={() => router.push(`/auditor/${address}`)}
                 className="text-muted-foreground hover:text-foreground flex items-center gap-1.5 text-sm border border-border rounded-md px-3 py-1.5 transition-colors"
               >
                 Auditor workspace
@@ -229,6 +229,7 @@ export default function BusinessPage() {
           <div className="flex flex-1 flex-col px-6 py-4">
             <div className={activeView === "settings" ? "block" : "hidden"}>
               <AuditorPanel
+                businessAddress={address!}
                 auditor={auditor}
                 txPending={tx.pending}
                 txHash={tx.hash}

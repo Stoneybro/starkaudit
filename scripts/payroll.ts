@@ -18,7 +18,8 @@ const ACCOUNT_PK = process.env.ACCOUNT_PRIVATE_KEY!
 const VIEWING_KEY = BigInt(process.env.VIEWING_KEY!)
 const POOL_ADDRESS = process.env.POOL_ADDRESS! || "0x0254a6b2997ef52e9f830ce1f543f6b29768295e8d17e2267d672c552cfe0d91"
 const STRK = "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d"
-const PAYROLL = "0x48a2b7e6566a915e34bea7a285212df5463a95a5900bd522575197191c25068"
+// Env-first so a redeploy is picked up automatically; old address kept as fallback.
+const PAYROLL = process.env.PAYROLL_ANONYMIZER_ADDRESS || "0x48a2b7e6566a915e34bea7a285212df5463a95a5900bd522575197191c25068"
 
 const TOTAL = 500000000000000000n
 const PAY1 = 300000000000000000n

@@ -18,6 +18,7 @@ export type ProofRecord = {
 
 export type ExceptionRecord = {
   nullifier: string
+  business?: string
   blockNumber: number
   txHash: string
 }
@@ -73,7 +74,11 @@ export async function fetchRegistryEvents(
           blockNumber,
           txHash,
         })
+      } else if (keys[0] === SELECTORS.exceptionFlagged && keys.length >= 3) {
+        // Per-business: keys = [selector, business, nullifier].
+        exceptions.push({ nullifier: keys[2], business: keys[1], blockNumber, txHash })
       } else if (keys[0] === SELECTORS.exceptionFlagged && keys.length >= 2) {
+        // Legacy global-auditor deployment: keys = [selector, nullifier].
         exceptions.push({ nullifier: keys[1], blockNumber, txHash })
       } else if (data.length === 5 && keys.length >= 2) {
         // Shape fallback if a selector ever mismatches.
@@ -98,24 +103,27 @@ export async function fetchRegistryEvents(
   return { proofs, exceptions }
 }
 
-export async function getThreshold(provider: RpcProvider): Promise<{ commitment: string; version: string }> {
+export async function getThreshold(
+  provider: RpcProvider,
+  business: string,
+): Promise<{ commitment: string; version: string }> {
   const [commitment, version] = (await Promise.all([
-    provider.callContract({ contractAddress: REGISTRY_ADDRESS, entrypoint: "get_threshold_commitment", calldata: [] }),
-    provider.callContract({ contractAddress: REGISTRY_ADDRESS, entrypoint: "get_threshold_version", calldata: [] }),
+    provider.callContract({ contractAddress: REGISTRY_ADDRESS, entrypoint: "get_threshold_commitment", calldata: [business] }),
+    provider.callContract({ contractAddress: REGISTRY_ADDRESS, entrypoint: "get_threshold_version", calldata: [business] }),
   ])) as unknown as [string[], string[]]
   return { commitment: commitment[0] ?? "0x0", version: BigInt(version[0] ?? 0).toString() }
 }
 
-export async function getDuplicateWindow(provider: RpcProvider): Promise<string | null> {
+export async function getDuplicateWindow(provider: RpcProvider, business: string): Promise<string | null> {
   try {
     const res = (await provider.callContract({
       contractAddress: REGISTRY_ADDRESS,
       entrypoint: "get_duplicate_window",
-      calldata: [],
+      calldata: [business],
     })) as unknown as string[]
     return BigInt(res[0] ?? 0).toString()
   } catch {
-    // Older on-chain deployment predates the get_duplicate_window view.
+    // Older on-chain deployment predates the per-business get_duplicate_window view.
     return null
   }
 }
@@ -172,36 +180,6 @@ export async function hasThresholdPackage(
   } catch {
     return false
   }
-}
-
-/** All registered businesses from BusinessRegistered events (key = business). */
-export async function fetchRegisteredBusinesses(provider: RpcProvider): Promise<string[]> {
-  const out: string[] = []
-  const seen = new Set<string>()
-  let continuationToken: string | undefined = undefined
-  for (let page = 0; page < 20; page++) {
-    const res = (await provider.getEvents({
-      address: REGISTRY_ADDRESS,
-      from_block: { block_number: REGISTRY_DEPLOY_BLOCK },
-      to_block: "latest",
-      chunk_size: 100,
-      continuation_token: continuationToken,
-    })) as unknown as RawEventsPage
-    for (const e of res.events ?? []) {
-      const keys: string[] = e.keys ?? []
-      if (keys[0] === SELECTORS.businessRegistered && keys[1]) {
-        const addr = keys[1]
-        const norm = addr.toLowerCase()
-        if (!seen.has(norm)) {
-          seen.add(norm)
-          out.push(addr)
-        }
-      }
-    }
-    if (!res.continuation_token) break
-    continuationToken = res.continuation_token
-  }
-  return out
 }
 
 export async function getStrkBalance(provider: RpcProvider, address: string): Promise<bigint> {

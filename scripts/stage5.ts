@@ -22,7 +22,8 @@ const ACCOUNT_PK = process.env.ACCOUNT_PRIVATE_KEY!
 const VIEWING_KEY = BigInt(process.env.VIEWING_KEY!)
 const POOL_ADDRESS = process.env.POOL_ADDRESS! || "0x0254a6b2997ef52e9f830ce1f543f6b29768295e8d17e2267d672c552cfe0d91"
 const STRK = "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d"
-const REGISTRY = "0x1ce7138415c267093450c95241c0a02e1e5cd1b4db52452149fa05f36d6ead6"
+// Env-first so a redeploy is picked up automatically; old address kept as fallback.
+const REGISTRY = process.env.AUDIT_REGISTRY_ADDRESS || "0x1ce7138415c267093450c95241c0a02e1e5cd1b4db52452149fa05f36d6ead6"
 
 // Threshold inputs come ONLY from the sealed on-chain package synced by
 // scripts/sync_package.ts — never hardcoded, never delivered manually.
@@ -64,7 +65,7 @@ async function main() {
 
   // Fail fast: threshold inputs must reproduce the on-chain commitment
   const expectedTc = BigInt(hash.computePoseidonHashOnElements([TAGS.THRESHOLD_TAG, THRESHOLD, AUDITOR_SALT]))
-  const onchainTc: any = await provider.callContract({ contractAddress: REGISTRY, entrypoint: "get_threshold_commitment", calldata: [] })
+  const onchainTc: any = await provider.callContract({ contractAddress: REGISTRY, entrypoint: "get_threshold_commitment", calldata: [ACCOUNT_ADDRESS] })
   if (BigInt(onchainTc[0]) !== expectedTc) throw new Error(`Threshold commitment mismatch onchain=${onchainTc[0]} expected=${toHex(expectedTc)}`)
   console.log(`Threshold commitment verified ${toHex(expectedTc)}`)
 
