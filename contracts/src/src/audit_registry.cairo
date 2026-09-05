@@ -372,6 +372,7 @@ pub mod AuditRegistry {
             self._assert_auditor();
             let version = self.threshold_version.read();
             assert(version != 0, 'NO_THRESHOLD');
+            assert(self.distribution_key_exists.entry(business).read(), 'NO_DIST_KEY');
             self.packages.entry((business, version)).write(ThresholdPackage { eph_low, eph_high, nonce, c0, c1, c2 });
             self.package_exists.entry((business, version)).write(true);
             self.emit(ThresholdPackageShared { business, version });

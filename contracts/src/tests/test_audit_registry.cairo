@@ -242,6 +242,17 @@ fn test_share_package_without_threshold_reverts() {
 }
 
 #[test]
+#[should_panic(expected: ('NO_DIST_KEY',))]
+fn test_share_package_without_dist_key_reverts() {
+    let (addr, dispatcher) = deploy_registry();
+    start_cheat_caller_address(addr, AUDITOR());
+    dispatcher.set_threshold_commitment(0xabc);
+    // No set_distribution_key for BUSINESS — share must refuse.
+    dispatcher.share_threshold_package(BUSINESS(), 0x1, 0x2, 0x3, 0x4, 0x5, 0x6);
+    stop_cheat_caller_address(addr);
+}
+
+#[test]
 #[should_panic(expected: ('NO_PACKAGE',))]
 fn test_get_missing_package_reverts() {
     let (addr, dispatcher) = deploy_registry();
