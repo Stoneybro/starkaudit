@@ -10,8 +10,8 @@ async function main() {
   const account = new Account({ provider, address: ACCOUNT_ADDRESS, signer: ACCOUNT_PK, cairoVersion: "1" })
   console.log(`Deployer ${ACCOUNT_ADDRESS}`)
 
-  const sierraPath = "contracts/target/dev/shadowaudit_AuditRegistry.contract_class.json"
-  const casmPath = "contracts/target/dev/shadowaudit_AuditRegistry.compiled_contract_class.json"
+  const sierraPath = "contracts/target/dev/starkaudit_AuditRegistry.contract_class.json"
+  const casmPath = "contracts/target/dev/starkaudit_AuditRegistry.compiled_contract_class.json"
   const sierra = JSON.parse(fs.readFileSync(sierraPath, "utf-8"))
   const casm = JSON.parse(fs.readFileSync(casmPath, "utf-8"))
 

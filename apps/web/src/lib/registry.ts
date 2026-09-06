@@ -146,6 +146,20 @@ export async function getAuditor(provider: RpcProvider, business: string): Promi
   return res[0] ?? "0x0"
 }
 
+export async function getRelayer(provider: RpcProvider, business: string): Promise<string> {
+  try {
+    const res = (await provider.callContract({
+      contractAddress: REGISTRY_ADDRESS,
+      entrypoint: "get_relayer",
+      calldata: [business],
+    })) as unknown as string[]
+    return res[0] ?? "0x0"
+  } catch {
+    // Older on-chain deployment predates the relayer role.
+    return "0x0"
+  }
+}
+
 export type DistributionKey = { low: string; high: string } | null
 
 /** Business X25519 distribution pubkey, or null if unset / predeploy. */

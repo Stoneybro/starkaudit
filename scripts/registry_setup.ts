@@ -28,6 +28,12 @@ async function main() {
   await provider.waitForTransaction(tx1b.transaction_hash)
   console.log("Auditor set")
 
+  console.log("Appointing backend as relayer (demo: backend auto-submits for this business)...")
+  const tx1c: any = await account.execute({ contractAddress: REGISTRY, entrypoint: "set_relayer", calldata: [ACCOUNT_ADDRESS] }, { tip: 0n })
+  console.log(`set_relayer tx ${tx1c.transaction_hash} https://sepolia.voyager.online/tx/${tx1c.transaction_hash}`)
+  await provider.waitForTransaction(tx1c.transaction_hash)
+  console.log("Relayer set")
+
   console.log("Setting threshold commitment (per-business: caller must be that business's auditor)...")
   const tx2: any = await account.execute({ contractAddress: REGISTRY, entrypoint: "set_threshold_commitment", calldata: [BUSINESS, threshold_commitment] }, { tip: 0n })
   console.log(`set_threshold tx ${tx2.transaction_hash} https://sepolia.voyager.online/tx/${tx2.transaction_hash}`)

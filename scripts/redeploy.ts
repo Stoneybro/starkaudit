@@ -34,10 +34,10 @@ const L1_DATA_PRICE = 1151730722244n
 const L1_PRICE = 273791058036135n
 
 function sierra(name: string) {
-  return JSON.parse(fs.readFileSync(`contracts/target/dev/shadowaudit_${name}.contract_class.json`, "utf8"))
+  return JSON.parse(fs.readFileSync(`contracts/target/dev/starkaudit_${name}.contract_class.json`, "utf8"))
 }
 function casm(name: string) {
-  return JSON.parse(fs.readFileSync(`contracts/target/dev/shadowaudit_${name}.compiled_contract_class.json`, "utf8"))
+  return JSON.parse(fs.readFileSync(`contracts/target/dev/starkaudit_${name}.compiled_contract_class.json`, "utf8"))
 }
 
 async function main() {
@@ -86,9 +86,9 @@ async function main() {
     }
   }
 
-  // ---- Deploy AuditRegistry ----
+  // ---- Deploy AuditRegistry (constructor takes no args — no global auditor) ----
   const regDeploy: any = await account.deployContract(
-    { classHash: regClassHex, constructorCalldata: [ACCOUNT_ADDRESS] },
+    { classHash: regClassHex, constructorCalldata: [] },
     { tip: 0n },
   )
   console.log(`Registry deploy tx ${regDeploy.transaction_hash}`)

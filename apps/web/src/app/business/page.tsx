@@ -22,8 +22,13 @@ import { useProofFeed } from "@/hooks/useProofFeed";
 import { REGISTRY_ADDRESS, getProvider } from "@/lib/starknet";
 import { STRK_ADDRESS } from "@/lib/payments";
 import { errMsg } from "@/lib/utils";
-import { formatStrk, getAuditor, getStrkBalance, isRegistered } from "@/lib/registry";
+import { formatStrk, getAuditor, getRelayer, getStrkBalance, isRegistered } from "@/lib/registry";
 import { formatNumber } from "@/utils/format";
+
+const EXPECTED_RELAYER =
+  process.env.NEXT_PUBLIC_RELAYER_ADDRESS && process.env.NEXT_PUBLIC_RELAYER_ADDRESS.length > 2
+    ? (process.env.NEXT_PUBLIC_RELAYER_ADDRESS as string)
+    : null;
 
 const viewMeta: Record<AppView, { title: string; description: string }> = {
   settings: { title: "Settings", description: "Manage the auditor who reviews your encrypted records." },
@@ -47,6 +52,7 @@ export default function BusinessPage() {
   const [statusError, setStatusError] = useState<string | null>(null);
   const [registered, setRegistered] = useState(false);
   const [auditor, setAuditor] = useState<string | null>(null);
+  const [relayer, setRelayer] = useState<string | null>(null);
   const [balanceRaw, setBalanceRaw] = useState<bigint | null>(null);
   const [balanceLoading, setBalanceLoading] = useState(false);
   const [tx, setTx] = useState<TxState>({ pending: false });
@@ -86,11 +92,12 @@ export default function BusinessPage() {
     if (!address) return;
     setBalanceLoading(true);
     const provider = getProvider();
-    Promise.all([isRegistered(provider, address), getStrkBalance(provider, address), getAuditor(provider, address)])
-      .then(([reg, bal, aud]) => {
+    Promise.all([isRegistered(provider, address), getStrkBalance(provider, address), getAuditor(provider, address), getRelayer(provider, address)])
+      .then(([reg, bal, aud, rel]) => {
         setRegistered(reg);
         setBalanceRaw(bal);
         setAuditor(aud === "0x0" ? null : aud);
+        setRelayer(rel === "0x0" ? null : rel);
         setStatusLoading(false);
         setBalanceLoading(false);
         setStatusError(null);
@@ -109,7 +116,7 @@ export default function BusinessPage() {
   }, [reloadInfo]);
 
   const runTx = useCallback(
-    async (entrypoint: "register_business" | "set_auditor", calldata: string[]) => {
+    async (entrypoint: "register_business" | "set_auditor" | "set_relayer", calldata: string[]) => {
       const account = wallet.getAccount();
       if (!account) {
         setTx({ pending: false, error: "Wallet not connected." });
@@ -231,10 +238,13 @@ export default function BusinessPage() {
               <AuditorPanel
                 businessAddress={address!}
                 auditor={auditor}
+                relayer={relayer}
+                expectedRelayer={EXPECTED_RELAYER}
                 txPending={tx.pending}
                 txHash={tx.hash}
                 txError={tx.error}
                 onSetAuditor={(addr) => void runTx("set_auditor", [addr])}
+                onSetRelayer={(addr) => void runTx("set_relayer", [addr])}
               />
             </div>
 

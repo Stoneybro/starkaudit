@@ -286,6 +286,37 @@ export function PaymentsPanel({
               );
               onPublicBalanceChanged?.();
               onShieldedBalanceChanged?.();
+              // ── Automatic audit relay (transfers only, background) ──
+              // The backend rebuilds the witness and relays submit_proof_for
+              // attributed to this business (needs set_relayer once). No wallet
+              // prompt — fire-and-forget: the payment already succeeded, the
+              // proof is best-effort and the auditor dashboard picks it up.
+              if (kind === "transfer" && recipientAddr && amountWei > 0n) {
+                void fetch("/api/submit-proof", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    business: address,
+                    recipient: recipientAddr,
+                    amountWei: amountWei.toString(),
+                    txHash: transaction_hash,
+                  }),
+                })
+                  .then((res) => res.json())
+                  .then((data: { success?: boolean; alreadySubmitted?: boolean; pass?: boolean | null }) => {
+                    if (data?.success && !data?.alreadySubmitted) {
+                      toast.success(
+                        data.pass
+                          ? "Audit proof submitted — payment passes materiality"
+                          : "Audit proof submitted — payment exceeds threshold",
+                        { description: "Your auditor can see this on their dashboard." },
+                      );
+                    }
+                  })
+                  .catch(() => {
+                    console.warn("[PaymentsPanel] audit relay failed silently");
+                  });
+              }
             } else if (status === "failed") {
               setError("The transaction was reverted on-chain. Check your balance and try again.");
               toast.error("Transaction reverted");

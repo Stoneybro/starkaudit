@@ -3,10 +3,10 @@ use snforge_std::{
     declare, ContractClassTrait, DeclareResultTrait, start_cheat_caller_address,
     stop_cheat_caller_address,
 };
-use shadowaudit::payroll_anonymizer::{
+use starkaudit::payroll_anonymizer::{
     IPayrollAnonymizerDispatcher, IPayrollAnonymizerDispatcherTrait, OpenNoteDeposit,
 };
-use shadowaudit::mock_erc20::{IMockERC20Dispatcher, IMockERC20DispatcherTrait};
+use starkaudit::mock_erc20::{IMockERC20Dispatcher, IMockERC20DispatcherTrait};
 
 fn POOL() -> ContractAddress {
     0x504f4f4c.try_into().unwrap()

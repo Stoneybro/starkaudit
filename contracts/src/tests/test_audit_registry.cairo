@@ -1,11 +1,12 @@
 use starknet::ContractAddress;
 use snforge_std::{declare, ContractClassTrait, DeclareResultTrait, start_cheat_caller_address, stop_cheat_caller_address, spy_events, EventSpyAssertionsTrait, start_cheat_block_timestamp, stop_cheat_block_timestamp};
-use shadowaudit::audit_registry::{IAuditRegistryDispatcher, IAuditRegistryDispatcherTrait};
+use starkaudit::audit_registry::{IAuditRegistryDispatcher, IAuditRegistryDispatcherTrait};
 
 fn AUDITOR() -> ContractAddress { 0x1234.try_into().unwrap() }
 fn AUDITOR2() -> ContractAddress { 0x4321.try_into().unwrap() }
 fn BUSINESS() -> ContractAddress { 0x5678.try_into().unwrap() }
 fn BUSINESS2() -> ContractAddress { 0x8765.try_into().unwrap() }
+fn RELAYER() -> ContractAddress { 0xabcd.try_into().unwrap() }
 fn ATTACKER() -> ContractAddress { 0x9abc.try_into().unwrap() }
 
 fn deploy_registry() -> (ContractAddress, IAuditRegistryDispatcher) {
@@ -124,7 +125,7 @@ fn test_submit_proof_store_and_emit() {
     assert(res.is_duplicate == false, 'not duplicate');
     assert(res.offchain_verified == true, 'offchain fallback');
     // Check event
-    spy.assert_emitted(@array![(dispatcher.contract_address, shadowaudit::audit_registry::AuditRegistry::Event::ProofSubmitted(shadowaudit::audit_registry::ProofSubmitted { nullifier, business: BUSINESS(), pass: true, is_duplicate: false, unverified_binding: false, offchain_verified: true }))]);
+    spy.assert_emitted(@array![(dispatcher.contract_address, starkaudit::audit_registry::AuditRegistry::Event::ProofSubmitted(starkaudit::audit_registry::ProofSubmitted { nullifier, business: BUSINESS(), pass: true, is_duplicate: false, unverified_binding: false, offchain_verified: true }))]);
 }
 
 #[test]
@@ -138,7 +139,7 @@ fn test_submit_proof_fail_claim_stored() {
     let res = dispatcher.get_result(nullifier);
     assert(res.pass == false, 'fail claim stored');
     assert(res.is_duplicate == false, 'fresh dup commit');
-    spy.assert_emitted(@array![(dispatcher.contract_address, shadowaudit::audit_registry::AuditRegistry::Event::ProofSubmitted(shadowaudit::audit_registry::ProofSubmitted { nullifier, business: BUSINESS(), pass: false, is_duplicate: false, unverified_binding: false, offchain_verified: true }))]);
+    spy.assert_emitted(@array![(dispatcher.contract_address, starkaudit::audit_registry::AuditRegistry::Event::ProofSubmitted(starkaudit::audit_registry::ProofSubmitted { nullifier, business: BUSINESS(), pass: false, is_duplicate: false, unverified_binding: false, offchain_verified: true }))]);
 }
 
 #[test]
@@ -256,7 +257,7 @@ fn test_flag_exception_auditor_succeeds() {
     start_cheat_caller_address(dispatcher.contract_address, AUDITOR());
     dispatcher.flag_exception(BUSINESS(), 0xabc);
     stop_cheat_caller_address(dispatcher.contract_address);
-    spy.assert_emitted(@array![(dispatcher.contract_address, shadowaudit::audit_registry::AuditRegistry::Event::ExceptionFlagged(shadowaudit::audit_registry::ExceptionFlagged { business: BUSINESS(), nullifier: 0xabc }))]);
+    spy.assert_emitted(@array![(dispatcher.contract_address, starkaudit::audit_registry::AuditRegistry::Event::ExceptionFlagged(starkaudit::audit_registry::ExceptionFlagged { business: BUSINESS(), nullifier: 0xabc }))]);
 }
 
 #[test]
@@ -350,4 +351,102 @@ fn test_get_missing_package_reverts() {
     dispatcher.set_threshold_commitment(BUSINESS(), 0xabc);
     stop_cheat_caller_address(addr);
     dispatcher.get_threshold_package(BUSINESS(), 1);
+}
+
+// ── Relayer (auto-submit backend) ────────────────────────────────────────────
+
+fn setup_relayer(dispatcher: IAuditRegistryDispatcher, business: ContractAddress, relayer: ContractAddress) {
+    start_cheat_caller_address(dispatcher.contract_address, business);
+    dispatcher.set_relayer(relayer);
+    stop_cheat_caller_address(dispatcher.contract_address);
+}
+
+#[test]
+fn test_set_relayer_self_serve() {
+    let (_, dispatcher) = deploy_registry();
+    start_cheat_caller_address(dispatcher.contract_address, BUSINESS());
+    dispatcher.set_relayer(RELAYER());
+    stop_cheat_caller_address(dispatcher.contract_address);
+    assert(dispatcher.get_relayer(BUSINESS()) == RELAYER(), 'relayer set');
+    // Attacker can only set its own entry, never BUSINESS's.
+    start_cheat_caller_address(dispatcher.contract_address, ATTACKER());
+    dispatcher.set_relayer(ATTACKER());
+    stop_cheat_caller_address(dispatcher.contract_address);
+    // No getter by design; prove it via submit_proof_for below (authorized).
+    start_cheat_caller_address(dispatcher.contract_address, RELAYER());
+    dispatcher.submit_proof_for(BUSINESS(), 0x91, 0x50, 0x51, 0x52, 0x53, array![].span(), array![].span(), true);
+    stop_cheat_caller_address(dispatcher.contract_address);
+    let res = dispatcher.get_result(0x91);
+    assert(res.business == BUSINESS(), 'relayed attribution');
+}
+
+#[test]
+fn test_submit_proof_for_attribution_and_event() {
+    let (_, dispatcher) = deploy_registry();
+    setup_relayer(dispatcher, BUSINESS(), RELAYER());
+    let mut spy = spy_events();
+    start_cheat_caller_address(dispatcher.contract_address, RELAYER());
+    dispatcher.submit_proof_for(BUSINESS(), 0x92, 0x50, 0x51, 0x52, 0x53, array![].span(), array![].span(), true);
+    stop_cheat_caller_address(dispatcher.contract_address);
+    let res = dispatcher.get_result(0x92);
+    // Caller was RELAYER, but the record belongs to BUSINESS — the auditor
+    // dashboard reads it identically to a self-submitted proof.
+    assert(res.business == BUSINESS(), 'business attributed');
+    assert(res.pass == true, 'pass claim stored');
+    assert(res.is_duplicate == false, 'fresh dup commit');
+    spy.assert_emitted(@array![(dispatcher.contract_address, starkaudit::audit_registry::AuditRegistry::Event::ProofSubmitted(starkaudit::audit_registry::ProofSubmitted { nullifier: 0x92, business: BUSINESS(), pass: true, is_duplicate: false, unverified_binding: false, offchain_verified: true }))]);
+}
+
+#[test]
+#[should_panic(expected: ('NOT_RELAYER',))]
+fn test_submit_proof_for_wrong_caller_reverts() {
+    let (_, dispatcher) = deploy_registry();
+    setup_relayer(dispatcher, BUSINESS(), RELAYER());
+    start_cheat_caller_address(dispatcher.contract_address, ATTACKER());
+    dispatcher.submit_proof_for(BUSINESS(), 0x93, 0x50, 0x51, 0x52, 0x53, array![].span(), array![].span(), true);
+    stop_cheat_caller_address(dispatcher.contract_address);
+}
+
+#[test]
+#[should_panic(expected: ('NOT_RELAYER',))]
+fn test_submit_proof_for_cannot_frame_other_business() {
+    let (_, dispatcher) = deploy_registry();
+    // RELAYER is appointed by BUSINESS only — submitting for BUSINESS2 reverts
+    // even though the caller is a legitimate relayer elsewhere.
+    setup_relayer(dispatcher, BUSINESS(), RELAYER());
+    setup_relayer(dispatcher, BUSINESS2(), AUDITOR2());
+    start_cheat_caller_address(dispatcher.contract_address, RELAYER());
+    dispatcher.submit_proof_for(BUSINESS2(), 0x94, 0x50, 0x51, 0x52, 0x53, array![].span(), array![].span(), true);
+    stop_cheat_caller_address(dispatcher.contract_address);
+}
+
+#[test]
+#[should_panic(expected: ('NO_RELAYER',))]
+fn test_submit_proof_for_no_relayer_reverts() {
+    let (_, dispatcher) = deploy_registry();
+    // BUSINESS never appointed a relayer.
+    start_cheat_caller_address(dispatcher.contract_address, RELAYER());
+    dispatcher.submit_proof_for(BUSINESS(), 0x95, 0x50, 0x51, 0x52, 0x53, array![].span(), array![].span(), true);
+    stop_cheat_caller_address(dispatcher.contract_address);
+}
+
+#[test]
+fn test_submit_proof_for_duplicate_per_business() {
+    let (addr, dispatcher) = deploy_registry();
+    // One backend serves both businesses; same payment fingerprint under each
+    // business must NOT collide, repeat under the same business must.
+    setup_relayer(dispatcher, BUSINESS(), RELAYER());
+    setup_relayer(dispatcher, BUSINESS2(), RELAYER());
+    let dup = 0xb33f;
+    start_cheat_caller_address(addr, RELAYER());
+    dispatcher.submit_proof_for(BUSINESS(), 0xa1, 0x10, 0x20, dup, 0x30, array![].span(), array![].span(), true);
+    dispatcher.submit_proof_for(BUSINESS2(), 0xa2, 0x10, 0x20, dup, 0x30, array![].span(), array![].span(), true);
+    stop_cheat_caller_address(addr);
+    assert(dispatcher.get_result(0xa2).is_duplicate == false, 'cross-business ok');
+    start_cheat_caller_address(addr, RELAYER());
+    dispatcher.submit_proof_for(BUSINESS(), 0xa3, 0x11, 0x21, dup, 0x31, array![].span(), array![].span(), true);
+    stop_cheat_caller_address(addr);
+    let res = dispatcher.get_result(0xa3);
+    assert(res.is_duplicate == true, 'same-business repeat dup');
+    assert(res.pass == false, 'dup overrides pass');
 }

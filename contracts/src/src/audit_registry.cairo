@@ -66,6 +66,20 @@ pub struct AuditorSet {
     pub auditor: ContractAddress,
 }
 
+// Relayer: the business's backend auto-submits proofs for it (no wallet
+// prompt per payment). Appointed self-serve by the business, like the auditor.
+// Trust note: the backend already holds the business's distribution secret and
+// threshold package, so a compromised backend key could already forge that
+// business's audit view — the relayer role adds no new trust assumption, and a
+// relayer can only ever submit for businesses that appointed it (no framing).
+
+#[derive(Drop, starknet::Event)]
+pub struct RelayerSet {
+    #[key]
+    pub business: ContractAddress,
+    pub relayer: ContractAddress,
+}
+
 #[derive(Drop, starknet::Event)]
 pub struct DuplicateWindowUpdated {
     #[key]
@@ -119,10 +133,23 @@ pub struct ThresholdPackageShared {
 pub trait IAuditRegistry<T> {
     fn register_business(ref self: T);
     fn set_auditor(ref self: T, auditor: ContractAddress);
+    fn set_relayer(ref self: T, relayer: ContractAddress);
     fn set_threshold_commitment(ref self: T, business: ContractAddress, hash: felt252);
     fn set_duplicate_window(ref self: T, business: ContractAddress, window_seconds: u64);
     fn submit_proof(
         ref self: T,
+        nullifier: felt252,
+        note_id: felt252,
+        audit_commitment: felt252,
+        dup_commit: felt252,
+        enc_amount: felt252,
+        proof: Span<felt252>,
+        public_inputs: Span<felt252>,
+        pass_claim: bool,
+    );
+    fn submit_proof_for(
+        ref self: T,
+        business: ContractAddress,
         nullifier: felt252,
         note_id: felt252,
         audit_commitment: felt252,
@@ -139,6 +166,7 @@ pub trait IAuditRegistry<T> {
     fn get_threshold_version(self: @T, business: ContractAddress) -> u64;
     fn get_duplicate_window(self: @T, business: ContractAddress) -> u64;
     fn get_auditor(self: @T, business: ContractAddress) -> ContractAddress;
+    fn get_relayer(self: @T, business: ContractAddress) -> ContractAddress;
     fn set_distribution_key(ref self: T, low: felt252, high: felt252);
     fn get_distribution_key(self: @T, business: ContractAddress) -> (felt252, felt252);
     fn has_distribution_key(self: @T, business: ContractAddress) -> bool;
@@ -160,7 +188,7 @@ pub trait IAuditRegistry<T> {
 
 #[starknet::contract]
 pub mod AuditRegistry {
-    use super::{AuditResult, IAuditRegistry, ProofSubmitted, ExceptionFlagged, ThresholdUpdated, BusinessRegistered, AuditorSet, DuplicateWindowUpdated, DistributionKey, DistributionKeySet, ThresholdPackage, ThresholdPackageShared, DEFAULT_DUPLICATE_WINDOW};
+    use super::{AuditResult, IAuditRegistry, ProofSubmitted, ExceptionFlagged, ThresholdUpdated, BusinessRegistered, AuditorSet, RelayerSet, DuplicateWindowUpdated, DistributionKey, DistributionKeySet, ThresholdPackage, ThresholdPackageShared, DEFAULT_DUPLICATE_WINDOW};
     use starknet::{ContractAddress, get_caller_address, get_block_timestamp};
     use starknet::storage::{Map, StoragePointerReadAccess, StoragePointerWriteAccess, StoragePathEntry};
 
@@ -168,6 +196,7 @@ pub mod AuditRegistry {
     struct Storage {
         businesses: Map<ContractAddress, bool>,
         auditor_of: Map<ContractAddress, ContractAddress>, // business -> chosen auditor
+        relayer_of: Map<ContractAddress, ContractAddress>, // business -> auto-submit backend
         threshold_commitment: Map<ContractAddress, felt252>, // business -> commitment
         threshold_version: Map<ContractAddress, u64>,        // business -> version
         duplicate_window: Map<ContractAddress, u64>,         // business -> seconds
@@ -192,6 +221,7 @@ pub mod AuditRegistry {
         ThresholdUpdated: ThresholdUpdated,
         BusinessRegistered: BusinessRegistered,
         AuditorSet: AuditorSet,
+        RelayerSet: RelayerSet,
         DuplicateWindowUpdated: DuplicateWindowUpdated,
         DistributionKeySet: DistributionKeySet,
         ThresholdPackageShared: ThresholdPackageShared,
@@ -223,6 +253,17 @@ pub mod AuditRegistry {
             let caller = get_caller_address();
             self.auditor_of.entry(caller).write(auditor);
             self.emit(AuditorSet { business: caller, auditor });
+        }
+
+        /// Business appoints its auto-submit backend (relayer) — self-serve like
+        /// set_auditor: any caller may set relayer_of[caller]. The relayer's
+        /// submit_proof_for transactions are recorded under the business, so the
+        /// auditor dashboard needs no extra wiring. Revoke by setting the zero
+        /// address; rotation is a single write and takes effect immediately.
+        fn set_relayer(ref self: ContractState, relayer: ContractAddress) {
+            let caller = get_caller_address();
+            self.relayer_of.entry(caller).write(relayer);
+            self.emit(RelayerSet { business: caller, relayer });
         }
 
         /// Set threshold commitment for a business — only that business's auditor.
@@ -274,53 +315,31 @@ pub mod AuditRegistry {
             public_inputs: Span<felt252>,
             pass_claim: bool,
         ) {
-            // Step 0: anti-replay
-            assert(!self.result_exists.entry(nullifier).read(), 'ALREADY_SUBMITTED');
-
-            // Step 1: storage check
-            // [VERIFY] Check if pool exposes a view for note payload at note_id.
-            // If yes: assert(pool.view_note_payload(note_id) == enc_amount)
-            // Until confirmed, mark offchain_verified = true for indexer to handle.
-            let offchain_verified = true; // [REPLACE] once pool view confirmed
-
-            // Step 2: proof verification
-            // [DECIDE] Once verifier address is deployed (§4), call:
-            //   assert(verifier.verify(proof, public_inputs), 'PROOF_INVALID');
-            // Until then, store proof as-is (offchain_verified path).
-
-            // Step 3: duplicate detection (per submitter business)
             let business = get_caller_address();
-            let now = get_block_timestamp();
-            let window = self._get_window(business);
-            let dup_key = (business, dup_commit);
-            let first_seen = self.dup_seen.entry(dup_key).read();
-            let seen_before = self.dup_seen_exists.entry(dup_key).read();
-            let is_duplicate = seen_before && (now - first_seen) <= window;
-            if !seen_before {
-                self.dup_seen.entry(dup_key).write(now);
-                self.dup_seen_exists.entry(dup_key).write(true);
-            }
+            _submit(ref self, business, nullifier, note_id, audit_commitment, dup_commit, enc_amount, proof, public_inputs, pass_claim);
+        }
 
-            // pass = submitter's threshold claim, overridden to false on duplicate.
-            // (On-chain threshold evaluation arrives with the verifier; until then
-            // the auditor re-verifies the claim off-chain against the commitments.)
-            let pass = pass_claim && !is_duplicate;
-
-            // Step 4: store + emit
-            let result = AuditResult {
-                business,
-                note_id,
-                audit_commitment,
-                dup_commit,
-                pass,
-                unverified_binding: false, // [UPDATE] set true if vector not confirmed by EOD Day 2
-                offchain_verified,
-                submitted_at: now,
-                is_duplicate,
-            };
-            self.results.entry(nullifier).write(result);
-            self.result_exists.entry(nullifier).write(true);
-            self.emit(ProofSubmitted { nullifier, business, pass, is_duplicate, unverified_binding: false, offchain_verified });
+        /// Relayer auto-submit: the business's appointed backend submits a proof
+        /// attributed to the business (no wallet prompt per payment). Only
+        /// relayer_of[business] may call (NO_RELAYER if unset, NOT_RELAYER
+        /// otherwise), so a relayer can never frame a business that did not
+        /// appoint it. Attribution, duplicate window and duplicate tracking all
+        /// use the given business — the auditor dashboard reads it identically
+        /// to a self-submitted proof.
+        fn submit_proof_for(
+            ref self: ContractState,
+            business: ContractAddress,
+            nullifier: felt252,
+            note_id: felt252,
+            audit_commitment: felt252,
+            dup_commit: felt252,
+            enc_amount: felt252,
+            proof: Span<felt252>,
+            public_inputs: Span<felt252>,
+            pass_claim: bool,
+        ) {
+            self._assert_relayer(business);
+            _submit(ref self, business, nullifier, note_id, audit_commitment, dup_commit, enc_amount, proof, public_inputs, pass_claim);
         }
 
         /// Flag an exception for a business's nullifier — only that business's auditor.
@@ -352,6 +371,10 @@ pub mod AuditRegistry {
 
         fn get_auditor(self: @ContractState, business: ContractAddress) -> ContractAddress {
             self.auditor_of.entry(business).read()
+        }
+
+        fn get_relayer(self: @ContractState, business: ContractAddress) -> ContractAddress {
+            self.relayer_of.entry(business).read()
         }
 
         /// Publish the caller's X25519 distribution pubkey (low/high u128 felts).
@@ -410,6 +433,69 @@ pub mod AuditRegistry {
 
     // ── Internal Helpers ─────────────────────────────────────────────────────
 
+    /// Shared submit core: steps 0–4 of the proof pipeline, attributed to the
+    /// given business. Called with caller-as-business by submit_proof and with
+    /// the appointed business by submit_proof_for (after the relayer check).
+    fn _submit(
+        ref self: ContractState,
+        business: ContractAddress,
+        nullifier: felt252,
+        note_id: felt252,
+        audit_commitment: felt252,
+        dup_commit: felt252,
+        enc_amount: felt252,
+        proof: Span<felt252>,
+        public_inputs: Span<felt252>,
+        pass_claim: bool,
+    ) {
+        // Step 0: anti-replay
+        assert(!self.result_exists.entry(nullifier).read(), 'ALREADY_SUBMITTED');
+
+        // Step 1: storage check
+        // [VERIFY] Check if pool exposes a view for note payload at note_id.
+        // If yes: assert(pool.view_note_payload(note_id) == enc_amount)
+        // Until confirmed, mark offchain_verified = true for indexer to handle.
+        let offchain_verified = true; // [REPLACE] once pool view confirmed
+
+        // Step 2: proof verification
+        // [DECIDE] Once verifier address is deployed (§4), call:
+        //   assert(verifier.verify(proof, public_inputs), 'PROOF_INVALID');
+        // Until then, store proof as-is (offchain_verified path).
+
+        // Step 3: duplicate detection (per attributed business)
+        let now = get_block_timestamp();
+        let window = self._get_window(business);
+        let dup_key = (business, dup_commit);
+        let first_seen = self.dup_seen.entry(dup_key).read();
+        let seen_before = self.dup_seen_exists.entry(dup_key).read();
+        let is_duplicate = seen_before && (now - first_seen) <= window;
+        if !seen_before {
+            self.dup_seen.entry(dup_key).write(now);
+            self.dup_seen_exists.entry(dup_key).write(true);
+        }
+
+        // pass = submitter's threshold claim, overridden to false on duplicate.
+        // (On-chain threshold evaluation arrives with the verifier; until then
+        // the auditor re-verifies the claim off-chain against the commitments.)
+        let pass = pass_claim && !is_duplicate;
+
+        // Step 4: store + emit
+        let result = AuditResult {
+            business,
+            note_id,
+            audit_commitment,
+            dup_commit,
+            pass,
+            unverified_binding: false, // [UPDATE] set true if vector not confirmed by EOD Day 2
+            offchain_verified,
+            submitted_at: now,
+            is_duplicate,
+        };
+        self.results.entry(nullifier).write(result);
+        self.result_exists.entry(nullifier).write(true);
+        self.emit(ProofSubmitted { nullifier, business, pass, is_duplicate, unverified_binding: false, offchain_verified });
+    }
+
     #[generate_trait]
     impl InternalImpl of InternalTrait {
         fn _assert_business_auditor(self: @ContractState, business: ContractAddress) {
@@ -418,6 +504,14 @@ pub mod AuditRegistry {
             let zero: ContractAddress = 0.try_into().unwrap();
             assert(auditor != zero, 'NO_AUDITOR');
             assert(get_caller_address() == auditor, 'NOT_AUDITOR');
+        }
+
+        fn _assert_relayer(self: @ContractState, business: ContractAddress) {
+            let relayer = self.relayer_of.entry(business).read();
+            // Zero address means the business never appointed a relayer.
+            let zero: ContractAddress = 0.try_into().unwrap();
+            assert(relayer != zero, 'NO_RELAYER');
+            assert(get_caller_address() == relayer, 'NOT_RELAYER');
         }
 
         fn _get_window(self: @ContractState, business: ContractAddress) -> u64 {

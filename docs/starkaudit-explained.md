@@ -126,6 +126,8 @@ Key functions:
 - `set_auditor(auditor)` — a business names its auditor. Open by design: any wallet picks the auditor for *itself*.
 - `set_threshold_commitment(business, hash)` — **that business's auditor only** (`NO_AUDITOR` if the business never named one, `NOT_AUDITOR` otherwise). Publishes `poseidon("starkaudit3", threshold, salt)` and bumps that business's version counter. The actual threshold number never goes on-chain — only the fingerprint.
 - `set_duplicate_window(business, seconds)` — that business's auditor only. How long a repeat counts as a duplicate (default 7 days = 604800 seconds).
+- `set_relayer(relayer)` — the business appoints its auto-submit backend (self-serve, like `set_auditor`; revoke with the zero address).
+- `submit_proof_for(business, …)` — the appointed relayer submits a proof attributed to the business (`NO_RELAYER`/`NOT_RELAYER` otherwise), so background submission needs no wallet prompt per payment. A relayer can only submit for businesses that appointed it — no framing. View: `get_relayer(business)`.
 - `submit_proof(...)` — the main event. Anyone may call it (an accepted demo trade-off, noted in code comments). Steps, in order:
   1. **Anti-replay**: each nullifier can be reported once (`ALREADY_SUBMITTED` otherwise).
   2. It stores the caller as the `business`, the note_id, both commitments, and the submitter's 1-bit `pass_claim` (their claimed verdict — the *amount* can never go on-chain because transaction data is public).
@@ -153,7 +155,7 @@ A nice robustness detail (with its own test, `test_privacy_invoke_donation_does_
 
 A minimal token with open minting, used by the test suite. Never deployed for real.
 
-The contracts are built with Scarb (Cairo's build tool; toolchain `starknet = "2.10.1"`, edition 2024_07 per `contracts/src/Scarb.toml`) and tested with **starknet-foundry (snforge)** — `contracts/src/tests/` holds 29 tests (23 for the registry, 6 for payroll) covering per-business access control, per-business threshold versioning and duplicate isolation, submit/anti-replay behavior, event emission, the payroll guard rails, and the sealed-envelope rules.
+The contracts are built with Scarb (Cairo's build tool; toolchain `starknet = "2.10.1"`, edition 2024_07 per `contracts/src/Scarb.toml`) and tested with **starknet-foundry (snforge)** — `contracts/src/tests/` holds 35 tests (29 for the registry, 6 for payroll) covering per-business access control, per-business threshold versioning and duplicate isolation, the relayer role (attribution, no-framing, per-business duplicates), submit/anti-replay behavior, event emission, the payroll guard rails, and the sealed-envelope rules.
 
 ---
 
@@ -186,6 +188,10 @@ The solution, spread across the contract, the SDK (`distribution.ts`), and three
 4. The opened values are written to `threshold-package.json` (gitignored — it contains live secrets), and `stage5.ts` refuses to run without it, so **the threshold is never hardcoded anywhere**.
 
 The exact same sealing logic is duplicated in the website (`apps/web/src/lib/distribution.ts`) because the browser dashboard can't import the Node SDK package — the file headers explicitly warn to keep the two byte-layouts identical. The repo even has a self-test for this crypto: `scripts/dist_roundtrip_check.ts` (seal → open → verify commitment → reject wrong keys → reject tampering).
+
+### Automatic audit relay (no clicks after sending)
+
+When a transfer confirms in the Business workspace, the frontend fire-and-forgets to `POST /api/submit-proof` (`apps/web/src/app/api/submit-proof/route.ts`) with the payer, recipient, amount and tx hash. The route rebuilds the witness from `threshold-package.json` (same formulas as `build_witness.ts`, mirrored inline) and relays `submit_proof_for` as the business's appointed relayer — attributed to the business, so the auditor's isolated dashboard shows it with zero wallet prompts. Requires one-time setup per business: appoint the backend via `set_relayer` (Business workspace → Settings → Automatic audit proofs) and hold its sealed package (`sync_package.ts`). Trust note: the backend already holds the distribution secret and threshold, so the relayer role adds no new trust assumption.
 
 ---
 

@@ -18,7 +18,9 @@ export function parseStrkToWei(input: string): bigint | null {
 }
 
 export function isValidStarknetAddress(v: string): boolean {
-  return /^0x[0-9a-fA-F]{1,63}$/.test(v.trim())
+  // 64 hex chars: wallets return zero-padded addresses (felt252 < 2^251, but
+  // padded form is standard display). Matches AUDITOR_SCHEMA / FELT_RE.
+  return /^0x[0-9a-fA-F]{1,64}$/.test(v.trim())
 }
 
 export type PaymentKind = "shield" | "transfer"
