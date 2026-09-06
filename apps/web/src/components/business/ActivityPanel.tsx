@@ -1,14 +1,31 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { Activity, ExternalLink, Loader2, RefreshCw, ShieldX } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Activity, ExternalLink, Loader2, RefreshCw, ShieldX, Users, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
+import { Input } from "@/components/ui/input";
+import {
+  Popover,
+  PopoverContent,
+  PopoverDescription,
+  PopoverHeader,
+  PopoverTitle,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { sameAddress, shortHash, voyagerTx } from "@/lib/starknet";
 import { getProvider } from "@/lib/starknet";
 import { type ProofRecord } from "@/lib/registry";
-import { fetchShieldDeposits, loadPayments, type PoolDeposit } from "@/lib/payments";
+import {
+  fetchChainActivity,
+  isValidStarknetAddress,
+  loadExtraAddresses,
+  loadPayments,
+  saveExtraAddresses,
+  type ChainPrivateTx,
+  type PoolDeposit,
+} from "@/lib/payments";
 import { formatNumber } from "@/utils/format";
 
 type ActivityRow = {
@@ -38,57 +55,204 @@ const headApproxTs = (block: number, headBlock: number) =>
 export function ActivityPanel({ address, proofs, loading, error, onRefresh }: ActivityPanelProps) {
   // History lives in localStorage → read it after mount to avoid hydration drift.
   const [history, setHistory] = useState<ReturnType<typeof loadPayments>>([]);
-  // On-chain shield deposits from the pool contract — the source of truth for
-  // shielding history. Fetched on mount + manual refresh only (a full scan is
-  // too heavy for the 15s local re-read below).
+  // On-chain activity from STRK Transfer events — the source of truth for
+  // shielding AND transfer history (shows everything an owned wallet did, even
+  // txs the wallet never returned a hash for). Transfer amounts stay
+  // "Private": they are encrypted on-chain, so the chain row only proves the
+  // payment happened. Fetched on mount, manual refresh, address changes, and
+  // every payments-changed signal from the Payments panel.
   const [deposits, setDeposits] = useState<PoolDeposit[]>([]);
+  const [chainTxs, setChainTxs] = useState<ChainPrivateTx[]>([]);
   const [depositsLoaded, setDepositsLoaded] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
+  // Extra addresses the user controls from the same private key (a relayer or
+  // backend account, a second account contract in their wallet, …). The chain
+  // scan runs over the connected wallet PLUS these, so shields and private
+  // transfers sent from any owned account appear here.
+  const [extraAddresses, setExtraAddresses] = useState<string[]>(() =>
+    typeof window !== "undefined" ? loadExtraAddresses() : [],
+  );
+  const [addressDraft, setAddressDraft] = useState("");
+  const [addressError, setAddressError] = useState<string | undefined>(undefined);
+  const [showAddresses, setShowAddresses] = useState(false);
+
+  const cancelledRef = useRef(false);
+  const extrasRef = useRef(extraAddresses);
+
+  // Keep the owned-address list the scan reads in line with the rendered one.
   useEffect(() => {
-    setHistory(loadPayments(address));
+    extrasRef.current = extraAddresses;
+  }, [extraAddresses]);
+
+  const loadChain = useCallback((list?: string[]) => {
+    const owned = list ?? extrasRef.current;
     setDepositsLoaded(false);
-    let cancelled = false;
     try {
-      void fetchShieldDeposits(getProvider(), address)
-        .then((d) => {
-          if (!cancelled) {
-            setDeposits(d);
+      void fetchChainActivity(getProvider(), address, owned)
+        .then(({ shields, privateTxs }) => {
+          if (!cancelledRef.current) {
+            setDeposits(shields);
+            setChainTxs(privateTxs);
             setDepositsLoaded(true);
           }
         })
         .catch(() => {
           // RPC failure — local entries still render.
-          if (!cancelled) setDepositsLoaded(true);
+          if (!cancelledRef.current) setDepositsLoaded(true);
         });
     } catch {
       // Missing RPC URL — local entries still render.
-      setDepositsLoaded(true);
+      if (!cancelledRef.current) setDepositsLoaded(true);
     }
-    const t = setInterval(() => setHistory(loadPayments(address)), 15000);
-    return () => {
-      cancelled = true;
-      clearInterval(t);
-    };
   }, [address]);
+
+  useEffect(() => {
+    cancelledRef.current = false;
+    // Initial history + chain reads are deferred (not synchronous setState
+    // inside the effect body); the interval and events keep them fresh.
+    const refreshHistory = () => setHistory(loadPayments(address));
+    const t0 = window.setTimeout(refreshHistory, 0);
+    const t1 = window.setTimeout(() => loadChain(), 0);
+    const t = setInterval(refreshHistory, 15000);
+    // PaymentsPanel dispatches this after every save (submit, confirm,
+    // recovery) and after a wallet timeout (delayed rescan signal), so new
+    // rows — including chain activity the wallet never returned a hash for —
+    // appear without a manual refresh.
+    const onChanged = () => {
+      refreshHistory();
+      loadChain();
+    };
+    window.addEventListener("starkaudit:payments-changed", onChanged);
+    window.addEventListener("storage", onChanged);
+    return () => {
+      cancelledRef.current = true;
+      clearTimeout(t0);
+      clearTimeout(t1);
+      clearInterval(t);
+      window.removeEventListener("starkaudit:payments-changed", onChanged);
+      window.removeEventListener("storage", onChanged);
+    };
+  }, [address, loadChain]);
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
     onRefresh();
     setHistory(loadPayments(address));
     try {
-      setDeposits(await fetchShieldDeposits(getProvider(), address));
+      const { shields, privateTxs } = await fetchChainActivity(getProvider(), address, extrasRef.current);
+      setDeposits(shields);
+      setChainTxs(privateTxs);
     } catch {
-      // keep previous deposits on RPC failure
+      // keep previous chain rows on RPC failure
     }
     await new Promise((r) => setTimeout(r, 500));
     setIsRefreshing(false);
   };
+const addOwnedAddress = () => {
+    const v = addressDraft.trim().toLowerCase();
+    if (!isValidStarknetAddress(v)) {
+      setAddressError("Enter a valid 0x Starknet address (1–64 hex characters).");
+      return;
+    }
+    if (sameAddress(v, address)) {
+      setAddressError("That's the connected wallet address — already scanned.");
+      return;
+    }
+    if (extraAddresses.some((a) => sameAddress(a, v))) {
+      setAddressError("That address is already listed.");
+      return;
+    }
+    const next = [...extraAddresses, v];
+    setExtraAddresses(next);
+    saveExtraAddresses(next);
+    setAddressDraft("");
+    setAddressError(undefined);
+    loadChain(next);
+  };
+
+  const removeOwnedAddress = (a: string) => {
+    const next = extraAddresses.filter((x) => !sameAddress(x, a));
+    setExtraAddresses(next);
+    saveExtraAddresses(next);
+    loadChain(next);
+  };
+
+  const renderHeaderActions = () => (
+    <div className="flex items-center gap-2">
+      <Popover open={showAddresses} onOpenChange={setShowAddresses}>
+        <PopoverTrigger render={<Button variant="outline" size="sm" />} className="gap-1.5">
+          <Users className="h-3.5 w-3.5" />
+          Addresses
+          {extraAddresses.length > 0 && (
+            <span className="ml-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-primary/15 px-1 text-[10px] font-semibold text-primary">
+              {extraAddresses.length}
+            </span>
+          )}
+        </PopoverTrigger>
+        <PopoverContent align="end" className="w-80">
+          <PopoverHeader>
+            <PopoverTitle>Owned addresses</PopoverTitle>
+            <PopoverDescription>
+              Extra accounts from the same private key (e.g. your relayer). Their public STRK legs
+              are scanned too, so shields and private transfers sent from any owned address appear
+              here.
+            </PopoverDescription>
+          </PopoverHeader>
+          {extraAddresses.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No extra addresses yet.</p>
+          ) : (
+            extraAddresses.map((a) => (
+              <div
+                key={a}
+                className="flex items-center justify-between gap-2 rounded-md border border-border bg-muted/20 px-2 py-1.5"
+              >
+                <span className="truncate font-mono text-xs text-muted-foreground">{shortHash(a)}</span>
+                <button
+                  onClick={() => removeOwnedAddress(a)}
+                  aria-label={`Remove ${a}`}
+                  className="text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ))
+          )}
+          <div className="flex gap-2">
+            <Input
+              value={addressDraft}
+              onChange={(e) => setAddressDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") addOwnedAddress();
+              }}
+              placeholder="0x…"
+              className="font-mono text-xs"
+            />
+            <Button size="sm" variant="outline" onClick={addOwnedAddress}>
+              Add
+            </Button>
+          </div>
+          {addressError && <p className="text-xs text-destructive">{addressError}</p>}
+          <p className="text-xs text-muted-foreground">
+            Amounts and recipients of private transfers stay encrypted on-chain; only transfers sent
+            from a listed address are shown.
+          </p>
+        </PopoverContent>
+      </Popover>
+      <Button variant="outline" size="sm" onClick={handleRefresh} disabled={isRefreshing} className="shrink-0 gap-1.5">
+        <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
+        Refresh
+      </Button>
+    </div>
+  );
 
   const rows = useMemo<ActivityRow[]>(() => {
     const myProofs = proofs.filter((p) => sameAddress(p.business, address));
     const headBlock = myProofs.reduce((m, p) => Math.max(m, p.blockNumber), 0);
-    const chainHead = deposits.reduce((m, d) => Math.max(m, d.blockNumber), headBlock);
+    const chainHead = chainTxs.reduce(
+      (m, t) => Math.max(m, t.blockNumber),
+      deposits.reduce((m, d) => Math.max(m, d.blockNumber), headBlock),
+    );
 
     const proofRows: ActivityRow[] = myProofs.map((p) => {
       const status = p.isDuplicate
@@ -149,8 +313,37 @@ export function ActivityPanel({ address, proofs, loading, error, onRefresh }: Ac
       link: d.txHash ? voyagerTx(d.txHash) : undefined,
     }));
 
-    return [...paymentRowsFiltered, ...depositRows, ...proofRows].sort((a, b) => b.sortTs - a.sortTs);
-  }, [proofs, history, deposits, address]);
+    // On-chain private pool interactions that have NO local entry (the wallet
+    // never returned a hash — timeouts — or another device made them). These
+    // are the transfer counterparts of the shield rows above: the tx provably
+    // called the pool and was not a shield, but amounts/recipients are
+    // encrypted, so they render as amount-Private. Local entries (which know
+    // the typed amount/recipient) always win for the same tx.
+    const localTxHashes = new Set(
+      history.filter((e) => e.txHash).map((e) => e.txHash.toLowerCase()),
+    );
+    const chainTransferRows: ActivityRow[] = chainTxs
+      .filter((t) => !localTxHashes.has(t.txHash.toLowerCase()))
+      .map((t) => ({
+        key: `chaintx-${t.txHash}`,
+        whenLabel: `Block ${t.blockNumber.toLocaleString()}`,
+        sortTs: headApproxTs(t.blockNumber, chainHead),
+        type: "Private payment",
+        amount: null,
+        statusLabel:
+          t.status === "confirmed" ? "Confirmed" : t.status === "failed" ? "Reverted" : "Confirming…",
+        statusClass:
+          t.status === "confirmed"
+            ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400"
+            : t.status === "failed"
+              ? "bg-red-500/15 text-red-700 dark:text-red-400"
+              : "bg-blue-500/15 text-blue-700 dark:text-blue-400",
+        detail: shortHash(t.txHash),
+        link: voyagerTx(t.txHash),
+      }));
+
+    return [...paymentRowsFiltered, ...depositRows, ...chainTransferRows, ...proofRows].sort((a, b) => b.sortTs - a.sortTs);
+  }, [proofs, history, deposits, chainTxs, address]);
 
   if ((loading || !depositsLoaded) && rows.length === 0) {
     return (
@@ -183,10 +376,7 @@ export function ActivityPanel({ address, proofs, loading, error, onRefresh }: Ac
               Your payments and audit records in one place.
             </p>
           </div>
-          <Button variant="outline" size="sm" onClick={handleRefresh} disabled={isRefreshing} className="shrink-0 gap-1.5">
-            <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
-            Refresh
-          </Button>
+          {renderHeaderActions()}
         </div>
         <EmptyState
           icon={<Activity className="h-5 w-5" />}
@@ -207,10 +397,7 @@ export function ActivityPanel({ address, proofs, loading, error, onRefresh }: Ac
             Amounts you typed stay on this device.
           </p>
         </div>
-        <Button variant="outline" size="sm" onClick={handleRefresh} disabled={isRefreshing} className="shrink-0 gap-1.5">
-          <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
-          Refresh
-        </Button>
+        {renderHeaderActions()}
       </div>
 
       <div className="rounded-xl border border-border overflow-hidden">

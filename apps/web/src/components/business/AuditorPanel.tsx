@@ -23,13 +23,10 @@ import { shortHash, voyagerTx } from "@/lib/starknet";
 interface AuditorPanelProps {
   businessAddress: string;
   auditor: string | null;
-  relayer: string | null;
-  expectedRelayer: string | null;
   txPending: boolean;
   txHash?: string;
   txError?: string;
   onSetAuditor: (address: string) => void;
-  onSetRelayer: (address: string) => void;
 }
 
 const AUDITOR_SCHEMA = /^0x[0-9a-fA-F]{2,64}$/;
@@ -38,7 +35,7 @@ function formatAddress(address: string) {
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
-export function AuditorPanel({ businessAddress, auditor, relayer, expectedRelayer, txPending, txHash, txError, onSetAuditor, onSetRelayer }: AuditorPanelProps) {
+export function AuditorPanel({ businessAddress, auditor, txPending, txHash, txError, onSetAuditor }: AuditorPanelProps) {
   const [newAddress, setNewAddress] = useState("");
   const [inputError, setInputError] = useState<string | undefined>(undefined);
   const [grantDialogOpen, setGrantDialogOpen] = useState(false);
@@ -219,61 +216,6 @@ export function AuditorPanel({ businessAddress, auditor, relayer, expectedRelaye
 
         <Card>
           <CardHeader>
-            <CardTitle>Automatic audit proofs</CardTitle>
-            <CardDescription>
-              After each confirmed transfer, your backend submits the audit proof in the
-              background — no wallet prompts. Appoint it once as your relayer.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            {!relayer ? (
-              <div className="space-y-3">
-                <p className="text-sm text-muted-foreground">
-                  Background submission is off. Proofs must then be submitted manually or they
-                  never reach your auditor.
-                </p>
-                <Button
-                  size="sm"
-                  disabled={txPending || !expectedRelayer}
-                  onClick={() => expectedRelayer && onSetRelayer(expectedRelayer)}
-                >
-                  {txPending ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Submitting…
-                    </>
-                  ) : (
-                    "Enable automatic proofs"
-                  )}
-                </Button>
-                {!expectedRelayer && (
-                  <p className="text-xs text-destructive">
-                    Backend address not configured (NEXT_PUBLIC_RELAYER_ADDRESS).
-                  </p>
-                )}
-              </div>
-            ) : (
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex items-center gap-2 text-sm">
-                  <Badge variant="secondary">Active</Badge>
-                  <span className="font-mono" title={relayer}>{shortHash(relayer)}</span>
-                </div>
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  className="shrink-0"
-                  disabled={txPending}
-                  onClick={() => onSetRelayer("0x0")}
-                >
-                  Disable
-                </Button>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
             <div className="flex items-center justify-between gap-4">
               <div>
                 <CardTitle>Auditor Roster</CardTitle>
@@ -326,7 +268,9 @@ export function AuditorPanel({ businessAddress, auditor, relayer, expectedRelaye
             <AlertDialogHeader>
               <AlertDialogTitle>Assign auditor?</AlertDialogTitle>
               <AlertDialogDescription>
-                This will write {newAddress.trim()} to the audit registry as your auditor. This is a
+                This will write{" "}
+                <span className="font-mono break-all">{newAddress.trim()}</span>{" "}
+                to the audit registry as your auditor. This is a
                 public onchain transaction.
               </AlertDialogDescription>
             </AlertDialogHeader>
@@ -350,7 +294,9 @@ export function AuditorPanel({ businessAddress, auditor, relayer, expectedRelaye
             <AlertDialogHeader>
               <AlertDialogTitle>Revoke access?</AlertDialogTitle>
               <AlertDialogDescription>
-                This will remove {auditorToRevoke} as your assigned auditor onchain. Your auditor will
+                This will remove{" "}
+                <span className="font-mono break-all">{auditorToRevoke}</span>{" "}
+                as your assigned auditor onchain. Your auditor will
                 no longer receive outcome records for new transfers.
               </AlertDialogDescription>
             </AlertDialogHeader>

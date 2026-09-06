@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { WalletAccountV6 } from "starknet";
 import type { StarknetWindowObject } from "@starknet-io/get-starknet-core";
-import { ShieldCheck, ExternalLink, Lock, Loader2 } from "lucide-react";
+import { ShieldCheck, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,7 +22,6 @@ import {
   InputGroupInput,
   InputGroupText,
 } from "@/components/ui/input-group";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { getProvider, voyagerTx } from "@/lib/starknet";
 import {
   STRK_ADDRESS,
@@ -42,31 +41,10 @@ function toFeltHex(v: bigint): string {
   return `0x${v.toString(16)}`;
 }
 
-// Map documented Wallet API error codes to plain-English guidance.
-function friendlyWalletError(e: unknown, fallback: string): string {
-  const msg = e instanceof Error ? e.message : String(e);
-  if (msg.includes("NOT_REGISTERED")) {
-    return "Your wallet isn't registered with the privacy pool yet. Registration happens through your wallet on first use — try shielding a small amount and approve the request when prompted.";
-  }
-  if (msg.includes("INSUFFICIENT_PRIVATE_BALANCE")) {
-    return "Not enough shielded balance for this payment. Shield more STRK first.";
-  }
-  if (msg.includes("USER_REFUSED_OP")) {
-    return "The request was rejected in your wallet.";
-  }
-  if (msg.includes("PRIVACY_LEAK")) {
-    return "The wallet blocked this action because it would weaken your privacy (e.g. a same-block deposit-and-spend). Shield first, then pay in a separate transaction.";
-  }
-  if (msg.includes("Timeout")) {
-    return "The wallet timed out waiting for a response, but the transaction may still have landed on-chain (check your Ready wallet history). If it did, your balances will update after confirmation — the Activity entry couldn't be saved because no hash was returned.";
-  }
-  return fallback;
-}
-
 type PaymentsPanelProps = {
   address: string;
   getAccount: () => WalletAccountV6 | undefined;
-  /** Raw injected wallet — used only for the wallet_supportedWalletApi diagnostic. */
+  /** Raw injected wallet — kept for compatibility. */
   walletObject?: StarknetWindowObject;
   /** Raw shielded (private STRK20) balance in wei; null when unknown/unfetched. */
   shieldedRaw: bigint | null;
@@ -74,6 +52,8 @@ type PaymentsPanelProps = {
   onPublicBalanceChanged?: () => void;
   /** Fired after a payment confirms — lets the page re-read the shielded balance (wallet consent prompt). */
   onShieldedBalanceChanged?: () => void;
+  /** Fired after the audit relay succeeds — lets the page refresh the proof feed. */
+  onAuditRelayed?: () => void;
 };
 
 type FormErrors = Partial<Record<"address" | "amount" | "shieldAmount", string>>;
@@ -81,81 +61,45 @@ type FormErrors = Partial<Record<"address" | "amount" | "shieldAmount", string>>
 export function PaymentsPanel({
   address,
   getAccount,
-  walletObject,
   shieldedRaw,
   onPublicBalanceChanged,
   onShieldedBalanceChanged,
+  onAuditRelayed,
 }: PaymentsPanelProps) {
   const [shieldAmount, setShieldAmount] = useState("");
   const [payAmount, setPayAmount] = useState("");
   const [recipient, setRecipient] = useState("");
   const [submitting, setSubmitting] = useState<"shield" | "transfer" | null>(null);
-  const [error, setError] = useState<string | undefined>(undefined);
-  const [confirmedTx, setConfirmedTx] = useState<{ hash: string; kind: string } | undefined>(undefined);
-  const [needsRegistration, setNeedsRegistration] = useState(false);
-  const [regInfo, setRegInfo] = useState<{ versions?: string[]; error?: string } | null>(null);
   const [errors, setErrors] = useState<FormErrors>({});
-  // Transient "Shielded"/"Sent" confirmation shown for ~2s after the wallet
+
+  // Transient "Shielded"/"Sent" confirmation shown on button for ~2s after wallet
   // submits the tx (before on-chain confirmation finishes polling).
   const [successFlash, setSuccessFlash] = useState<
     { kind: "shield" | "transfer"; amount: string } | undefined
   >(undefined);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Guard against post-unmount state updates: React Fast Refresh (dev) or
   // navigation can unmount the component while a wallet promise is still
-  // pending. The stale closure's setState calls are silently dropped by
-  // React, but the ref lets us skip the work and the console noise.
+  // pending.
   const mountedRef = useRef(true);
-  // Watchdog: the wallet promise can stay pending if e.g. the user approved
-  // the ERC-20 approve prompt but never confirmed the second (deposit)
-  // prompt, or the wallet relays the tx but never resolves the dapp promise
-  // (seen as `Error: Timeout` from Ready's inpage bridge even though the tx
-  // landed). After 10s show a hint + manual reset; after 30s auto-reset the
-  // button so it can never stick on "Shielding…" forever. A late wallet
-  // resolution is still recorded (guarded by reqId so it can't clobber a
-  // newer request's button state).
-  const [stalled, setStalled] = useState(false);
-  const watchdog = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const autoReset = useRef<ReturnType<typeof setTimeout> | null>(null);
   const submittingRef = useRef<"shield" | "transfer" | null>(null);
   const activeReqId = useRef(0);
+  const requestSeq = useRef(0);
 
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
       if (flashTimer.current) clearTimeout(flashTimer.current);
-      if (watchdog.current) clearTimeout(watchdog.current);
-      if (autoReset.current) clearTimeout(autoReset.current);
     };
   }, []);
-
-  // Synchronous in-flight guard: React state updates async, so double-clicks
-  // before re-render would otherwise fire two wallet requests. The ref is set
-  // synchronously on entry and cleared in finally.
-  const requestSeq = useRef(0);
 
   const flashSuccess = useCallback((kind: "shield" | "transfer", amount: string) => {
     setSuccessFlash({ kind, amount });
     if (flashTimer.current) clearTimeout(flashTimer.current);
     flashTimer.current = setTimeout(() => setSuccessFlash(undefined), 2000);
   }, []);
-
-  // NOT_REGISTERED: per the STRK20 spec, registration (publishing the viewing
-  // key) happens inside the wallet on first use. The app never sees the viewing
-  // key, so it cannot register on the user's behalf. When a wallet returns this
-  // code instead, surface its reported Wallet API versions + concrete steps.
-  const handleNeedsRegistration = useCallback(async () => {
-    setNeedsRegistration(true);
-    if (!walletObject || regInfo) return;
-    try {
-      const res = (await walletObject.request({ type: "wallet_supportedWalletApi" })) as unknown;
-      const versions = Array.isArray(res) ? res.map((v) => String(v)) : undefined;
-      setRegInfo(versions?.length ? { versions } : { error: "This wallet did not report any supported Wallet API versions." });
-    } catch {
-      setRegInfo({ error: "This wallet did not report its supported Wallet API versions." });
-    }
-  }, [walletObject, regInfo]);
 
   const account = getAccount();
   const strk20Capable = !!account && typeof account.strk20InvokeTransaction === "function";
@@ -166,6 +110,116 @@ export function PaymentsPanel({
   const isInsufficient = shieldedRaw !== null && payWei !== null && payWei > shieldedRaw;
   const hasShieldedBalance = shieldedRaw !== null && shieldedRaw > 0n;
   const shieldedFormatted = shieldedRaw !== null ? formatNumber(shieldedRaw) : null;
+
+  const notifyPaymentsChanged = useCallback(() => {
+    try {
+      window.dispatchEvent(new Event("starkaudit:payments-changed"));
+    } catch {
+      // non-browser — history re-read is best-effort
+    }
+  }, []);
+
+  // ── Automatic audit relay (transfers only, background, best-effort) ──
+  // The backend rebuilds the witness and relays submit_proof_for attributed
+  // to this business. No wallet prompt — fire-and-forget.
+  const fireAuditRelay = useCallback(
+    (txHash: string, recipientAddr: string, amountWei: bigint) => {
+      void fetch("/api/submit-proof", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          business: address,
+          recipient: recipientAddr,
+          amountWei: amountWei.toString(),
+          txHash,
+        }),
+      })
+        .then((res) => res.json())
+        .then((data: { success?: boolean; alreadySubmitted?: boolean; pass?: boolean | null }) => {
+          if (data?.success && !data?.alreadySubmitted) {
+            onAuditRelayed?.();
+          }
+        })
+        .catch(() => {
+          console.warn("[PaymentsPanel] audit relay failed silently");
+        });
+    },
+    [address, onAuditRelayed],
+  );
+
+  // Record a landed tx: save locally (Activity picks it up immediately via
+  // the payments-changed event), then poll to finality.
+  const trackLandedTx = useCallback(
+    (
+      kind: "shield" | "transfer",
+      amountLabel: string,
+      amountWei: bigint,
+      recipientAddr: string | undefined,
+      transaction_hash: string,
+    ) => {
+      const entryId =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random()}`;
+      const entry: PaymentEntry = {
+        id: entryId,
+        kind,
+        amount: amountLabel,
+        recipient: recipientAddr,
+        txHash: transaction_hash,
+        createdAt: Date.now(),
+        status: "confirming",
+      };
+      savePayments(address, [entry, ...loadPayments(address).filter((e) => e.id !== entryId)]);
+      notifyPaymentsChanged();
+      void pollTxStatus(getProvider(), transaction_hash)
+        .then((status) => {
+          savePayments(
+            address,
+            loadPayments(address).map((e) => (e.id === entryId ? { ...e, status } : e)),
+          );
+          notifyPaymentsChanged();
+          if (status === "confirmed") {
+            if (kind === "shield") {
+              toast.success("Shield Confirmed", {
+                description: `${amountLabel} STRK shielded. New notes mature after ~10 blocks before they can be spent.`,
+                action: {
+                  label: "View on Voyager",
+                  onClick: () => window.open(voyagerTx(transaction_hash), "_blank", "noopener,noreferrer"),
+                },
+                duration: 6000,
+              });
+            } else {
+              toast.success("Payment Confirmed", {
+                description: `Sent ${amountLabel} STRK privately.`,
+                action: {
+                  label: "View on Voyager",
+                  onClick: () => window.open(voyagerTx(transaction_hash), "_blank", "noopener,noreferrer"),
+                },
+                duration: 6000,
+              });
+            }
+            onPublicBalanceChanged?.();
+            onShieldedBalanceChanged?.();
+            if (kind === "transfer" && recipientAddr && amountWei > 0n) {
+              fireAuditRelay(transaction_hash, recipientAddr, amountWei);
+            }
+          } else if (status === "failed") {
+            toast.error("Transaction failed", {
+              description: `The ${kind === "shield" ? "shield" : "payment"} transaction reverted on-chain.`,
+            });
+          } else {
+            // Confirmation is slow but the tx may already be visible on the
+            // public RPC — refresh the public balance (no wallet prompt).
+            onPublicBalanceChanged?.();
+          }
+        })
+        .catch(() => {
+          // Poll failed — the Activity entry keeps its "confirming" status.
+        });
+    },
+    [address, notifyPaymentsChanged, onPublicBalanceChanged, onShieldedBalanceChanged, fireAuditRelay],
+  );
 
   const runPayment = useCallback(
     async (kind: "shield" | "transfer", amountLabel: string, amountWei: bigint, recipientAddr?: string) => {
@@ -180,47 +234,17 @@ export function PaymentsPanel({
       const reqId = (requestSeq.current += 1);
       const acct = getAccount();
       if (!acct || typeof acct.strk20InvokeTransaction !== "function") {
-        setError("Your wallet does not support STRK20 private actions (Wallet API ≥ 0.10.3 required).");
+        toast.error("Unsupported Wallet", {
+          description: "STRK20 privacy requires a privacy-enabled wallet (Wallet API ≥ 0.10.3).",
+        });
         return false;
       }
-      setError(undefined);
-      setConfirmedTx(undefined);
-      setSuccessFlash(undefined);
-      setStalled(false);
+
       if (flashTimer.current) clearTimeout(flashTimer.current);
-      if (watchdog.current) clearTimeout(watchdog.current);
-      if (autoReset.current) clearTimeout(autoReset.current);
       submittingRef.current = kind;
       activeReqId.current = reqId;
       setSubmitting(kind);
-      // If the wallet promise is still pending after 10s (e.g. second prompt
-      // never approved), flag it so the UI can guide the user + offer reset.
-      watchdog.current = setTimeout(() => {
-        if (mountedRef.current && submittingRef.current !== null && activeReqId.current === reqId) {
-          setStalled(true);
-          console.warn(
-            `[PaymentsPanel] ${kind} #${reqId} wallet request still pending after 10s — likely waiting on a wallet prompt`,
-          );
-        }
-      }, 10_000);
-      // Absolute backstop: never leave the button stuck. After 30s release
-      // the UI so the user can retry; a late wallet resolution below still
-      // saves the payment (reqId-guarded so it can't clobber the new attempt).
-      autoReset.current = setTimeout(() => {
-        if (mountedRef.current && submittingRef.current !== null && activeReqId.current === reqId) {
-          console.warn(
-            `[PaymentsPanel] ${kind} #${reqId} auto-resetting stuck button after 30s`,
-          );
-          submittingRef.current = null;
-          setStalled(false);
-          setSubmitting(null);
-          setError(
-            "The wallet didn't respond within 30 seconds, so the button was reset. Check your Ready wallet history — if the transaction landed, balances update after confirmation; otherwise try again.",
-          );
-          toast("Wallet didn't respond — button reset. Check Ready history for the tx.");
-          onPublicBalanceChanged?.();
-        }
-      }, 30_000);
+
       try {
         // FELT params are hex strings per the Wallet API spec — decimal strings
         // are rejected with INVALID_REQUEST_PAYLOAD at wallet-side validation.
@@ -234,163 +258,66 @@ export function PaymentsPanel({
         const result = await acct.strk20InvokeTransaction(actions);
         console.log(`[PaymentsPanel] ${kind} #${reqId} wallet resolved`, result);
         const { transaction_hash } = result;
-        // Submission is done (wallet approved + tx sent) — release the button
-        // into a transient "Shielded"/"Sent" state; on-chain confirmation
-        // continues in the background below. Only touch button state if this
-        // request is still the active one (an auto-reset may have released it
-        // already) AND the component is still mounted; always record the
-        // payment + toast.
+
         const isActive = mountedRef.current && activeReqId.current === reqId;
         if (isActive) {
           submittingRef.current = null;
-          setStalled(false);
           setSubmitting(null);
           flashSuccess(kind, amountLabel);
-        } else {
-          console.log(
-            `[PaymentsPanel] ${kind} #${reqId} resolved after reset/unmount — recording payment without touching button`,
-          );
         }
-        const entryId =
-          typeof crypto !== "undefined" && "randomUUID" in crypto
-            ? crypto.randomUUID()
-            : `${Date.now()}-${Math.random()}`;
-        const entry: PaymentEntry = {
-          id: entryId,
-          kind,
-          amount: amountLabel,
-          recipient: recipientAddr,
-          txHash: transaction_hash,
-          createdAt: Date.now(),
-          status: "confirming",
-        };
-        savePayments(address, [entry, ...loadPayments(address).filter((e) => e.id !== entryId)]);
-        toast.success(
-          kind === "shield"
-            ? `Successfully shielded ${amountLabel} STRK`
-            : `Successfully paid ${amountLabel} STRK privately`,
-          { description: "Confirming on-chain — view it in the Activity table below." },
-        );
-        void pollTxStatus(getProvider(), transaction_hash)
-          .then((status) => {
-            savePayments(
-              address,
-              loadPayments(address).map((e) => (e.id === entryId ? { ...e, status } : e)),
-            );
-            if (status === "confirmed") {
-              setConfirmedTx({ hash: transaction_hash, kind: kind === "shield" ? "Shield" : "Private payment" });
-              toast.success(
-                kind === "shield"
-                  ? `Shield confirmed — ${amountLabel} STRK is now private`
-                  : `Private payment of ${amountLabel} STRK confirmed`,
-              );
-              onPublicBalanceChanged?.();
-              onShieldedBalanceChanged?.();
-              // ── Automatic audit relay (transfers only, background) ──
-              // The backend rebuilds the witness and relays submit_proof_for
-              // attributed to this business (needs set_relayer once). No wallet
-              // prompt — fire-and-forget: the payment already succeeded, the
-              // proof is best-effort and the auditor dashboard picks it up.
-              if (kind === "transfer" && recipientAddr && amountWei > 0n) {
-                void fetch("/api/submit-proof", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    business: address,
-                    recipient: recipientAddr,
-                    amountWei: amountWei.toString(),
-                    txHash: transaction_hash,
-                  }),
-                })
-                  .then((res) => res.json())
-                  .then((data: { success?: boolean; alreadySubmitted?: boolean; pass?: boolean | null }) => {
-                    if (data?.success && !data?.alreadySubmitted) {
-                      toast.success(
-                        data.pass
-                          ? "Audit proof submitted — payment passes materiality"
-                          : "Audit proof submitted — payment exceeds threshold",
-                        { description: "Your auditor can see this on their dashboard." },
-                      );
-                    }
-                  })
-                  .catch(() => {
-                    console.warn("[PaymentsPanel] audit relay failed silently");
-                  });
-              }
-            } else if (status === "failed") {
-              setError("The transaction was reverted on-chain. Check your balance and try again.");
-              toast.error("Transaction reverted");
-            } else {
-              toast("Still confirming — check the Activity table for its status.");
-              // Confirmation is slow but the tx may already be visible on the
-              // public RPC — refresh the public balance (no wallet prompt).
-              onPublicBalanceChanged?.();
-            }
-          })
-          .catch(() => {
-            toast("Couldn't poll confirmation status — check the Activity table on Voyager.");
-          });
+        trackLandedTx(kind, amountLabel, amountWei, recipientAddr, transaction_hash);
         return true;
       } catch (e: unknown) {
         console.error(`[PaymentsPanel] ${kind} #${reqId} wallet request failed`, e);
-        const msg = e instanceof Error ? e.message : String(e);
-        if (msg.includes("NOT_REGISTERED")) void handleNeedsRegistration();
-        if (mountedRef.current) {
-          setError(friendlyWalletError(e, "The wallet rejected or could not complete the request."));
+        const rawMsg = e instanceof Error ? e.message : String(e);
+        if (rawMsg.includes("NOT_REGISTERED")) {
+          toast.error("Viewing Key Registration Required", {
+            description:
+              "STRK20 accounts must register with the privacy pool. Enable privacy in your wallet settings and retry.",
+            duration: 8000,
+          });
+        } else if (
+          rawMsg.toLowerCase().includes("user abort") ||
+          rawMsg.toLowerCase().includes("user rejected") ||
+          rawMsg.toLowerCase().includes("user denied")
+        ) {
+          toast.error("Transaction cancelled", {
+            description: "You rejected the transaction in your wallet.",
+          });
+        } else {
+          const isTimeout = rawMsg.toLowerCase().includes("timeout");
+          if (isTimeout) {
+            onPublicBalanceChanged?.();
+          }
+          const cleanMsg = rawMsg.length > 120 ? `${rawMsg.slice(0, 117)}...` : rawMsg;
+          toast.error("Transaction failed", {
+            description: cleanMsg || "The transaction could not be submitted.",
+          });
         }
-        // The tx may still have landed (Ready `Timeout` after relay) — refresh
-        // the public balance (RPC-only, no wallet prompt) so a
-        // confirmed-but-unrecorded shield still shows up there.
-        if (msg.includes("Timeout")) onPublicBalanceChanged?.();
-        // Clear submitting so the button resets on error — only if this
-        // request is still active and the component is still mounted.
+
         if (mountedRef.current && activeReqId.current === reqId) {
           submittingRef.current = null;
-          setStalled(false);
           setSubmitting(null);
         }
         return false;
-      } finally {
-        if (watchdog.current) clearTimeout(watchdog.current);
-        if (autoReset.current) clearTimeout(autoReset.current);
       }
     },
-    [getAccount, address, onPublicBalanceChanged, onShieldedBalanceChanged, flashSuccess, handleNeedsRegistration],
+    [getAccount, onPublicBalanceChanged, flashSuccess, trackLandedTx],
   );
-
-  const resetStuck = useCallback(() => {
-    if (watchdog.current) clearTimeout(watchdog.current);
-    if (autoReset.current) clearTimeout(autoReset.current);
-    if (flashTimer.current) clearTimeout(flashTimer.current);
-    console.log("[PaymentsPanel] manual reset of stuck submitting state", {
-      stuck: submittingRef.current,
-    });
-    submittingRef.current = null;
-    setStalled(false);
-    setSubmitting(null);
-    setError(
-      "Reset the stuck Shield button. If your wallet already submitted a transaction, find its hash in the wallet activity tab — otherwise try shielding again and approve both wallet prompts.",
-    );
-    toast("Shield button reset — check your wallet activity for any submitted tx.");
-  }, []);
 
   const submitShield = async () => {
     if (!strk20Capable) {
-      toast.error("Wallet not STRK20-capable", {
-        description: "Reconnect with a privacy-enabled wallet (Wallet API ≥ 0.10.3) to shield.",
+      toast.error("Unsupported Wallet", {
+        description: "STRK20 privacy requires a privacy-enabled wallet (Wallet API ≥ 0.10.3).",
       });
       return;
     }
     const wei = parseStrkToWei(shieldAmount);
     if (!wei || wei <= 0n) {
       setErrors((p) => ({ ...p, shieldAmount: "Amount must be greater than 0" }));
-      toast.error("Invalid shield amount", {
-        description: "Enter an amount greater than 0 STRK to shield.",
-      });
       return;
     }
     setErrors((p) => ({ ...p, shieldAmount: undefined }));
-    setError(undefined);
     const ok = await runPayment("shield", shieldAmount.trim(), wei);
     if (ok) setShieldAmount("");
   };
@@ -398,8 +325,8 @@ export function PaymentsPanel({
   const submitPayment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!strk20Capable) {
-      toast.error("Wallet not STRK20-capable", {
-        description: "Reconnect with a privacy-enabled wallet (Wallet API ≥ 0.10.3) to pay privately.",
+      toast.error("Unsupported Wallet", {
+        description: "STRK20 privacy requires a privacy-enabled wallet (Wallet API ≥ 0.10.3).",
       });
       return;
     }
@@ -417,25 +344,9 @@ export function PaymentsPanel({
     }
     setErrors(next);
     if (Object.keys(next).length > 0) {
-      // Industry standard: inline errors + a summary toast so keyboard and
-      // assistive-tech users get the outcome announced.
-      if (next.amount && (next.amount.startsWith("No shielded") || next.amount.startsWith("Insufficient"))) {
-        toast.error("Shield first to pay privately", {
-          description:
-            next.amount.startsWith("No shielded")
-              ? "Your shielded balance is empty. Shield STRK above, then send the payment."
-              : `Your shielded balance (${shieldedFormatted} STRK) is too low for this payment. Shield more STRK first.`,
-        });
-      } else {
-        toast.error("Payment blocked — check the form", {
-          description: "Fix the highlighted fields and try again.",
-        });
-      }
       return;
     }
-    setError(undefined);
     const ok = await runPayment("transfer", payAmount.trim(), wei!, recipient.trim());
-    // Web-ui pattern: clear the form only after a successful submission.
     if (ok) {
       setRecipient("");
       setPayAmount("");
@@ -444,91 +355,6 @@ export function PaymentsPanel({
 
   return (
     <div className="max-w-2xl mx-auto w-full pb-12 space-y-4">
-      {!strk20Capable && (
-        <Alert variant="destructive">
-          <AlertTitle>Wallet not STRK20-capable</AlertTitle>
-          <AlertDescription>
-            Payments need a privacy-enabled wallet (Wallet API ≥ 0.10.3). Reconnect with a supported
-            wallet to shield and pay privately.
-          </AlertDescription>
-        </Alert>
-      )}
-
-      {needsRegistration && (
-        <Alert>
-          <Lock className="h-4 w-4" />
-          <AlertTitle>Wallet registration required</AlertTitle>
-          <AlertDescription>
-            <p>
-              STRK20 accounts must register their viewing key with the privacy pool before they can
-              shield or hold a private balance. The STRK20 spec puts this inside the wallet on first
-              use — StarkAudit never sees your viewing key, so it cannot register for you.
-            </p>
-            {regInfo?.versions && (
-              <p className="mt-2">
-                Your wallet reports Wallet API version{regInfo.versions.length > 1 ? "s" : ""}:{" "}
-                <span className="font-medium">{regInfo.versions.join(", ")}</span>
-              </p>
-            )}
-            {regInfo?.error && <p className="mt-2">{regInfo.error}</p>}
-            <ul className="mt-2 list-disc pl-4">
-              <li>Update your wallet extension to the latest version.</li>
-              <li>
-                Check its settings for a STRK20 / privacy / private-accounts option and enable it.
-              </li>
-              <li>
-                Reconnect here, then shield a small amount again and approve every prompt your wallet
-                shows.
-              </li>
-            </ul>
-          </AlertDescription>
-        </Alert>
-      )}
-
-      {error && (
-        <Alert variant="destructive">
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      )}
-
-      {confirmedTx && (
-        <Alert>
-          <ShieldCheck className="h-4 w-4" />
-          <AlertTitle>{confirmedTx.kind} confirmed</AlertTitle>
-          <AlertDescription>
-            <a
-              href={voyagerTx(confirmedTx.hash)}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1 font-medium underline underline-offset-2"
-            >
-              View on Voyager <ExternalLink className="h-3.5 w-3.5" />
-            </a>
-            {confirmedTx.kind === "Shield" &&
-              " New notes mature after ~10 blocks before they can be spent."}
-          </AlertDescription>
-        </Alert>
-      )}
-
-      {stalled && submitting !== null && (
-        <Alert>
-          <Loader2 className="h-4 w-4 animate-spin" />
-          <AlertTitle>Still waiting on your wallet…</AlertTitle>
-          <AlertDescription>
-            <p>
-              The wallet hasn&apos;t answered after 10 seconds. A shield needs{" "}
-              <strong>two approvals</strong>: 1) approve the STRK spend, then 2)
-              confirm the shield deposit. If your wallet already shows one
-              transaction, look for the second prompt — it may be hidden behind
-              the wallet popup.
-            </p>
-            <Button type="button" variant="outline" size="sm" className="mt-3" onClick={resetStuck}>
-              Reset the button
-            </Button>
-          </AlertDescription>
-        </Alert>
-      )}
-
       <Card className="shadow-sm">
         <CardHeader className="px-6 pt-4 pb-4">
           <CardTitle className="text-xl">Shield STRK</CardTitle>
@@ -579,7 +405,7 @@ export function PaymentsPanel({
                   Your wallet will prompt twice: approve the STRK spend, then confirm the
                   shield deposit.
                 </p>
-                {submitting === "shield" && !stalled && (
+                {submitting === "shield" && (
                   <p className="text-xs">
                     Waiting for wallet… approve both prompts. Proving can take ~10–30s.
                   </p>
@@ -591,6 +417,7 @@ export function PaymentsPanel({
                 onClick={submitShield}
                 disabled={!strk20Capable || submitting !== null || successFlash?.kind === "shield"}
                 className="w-full sm:w-auto"
+                title={!strk20Capable ? "STRK20 privacy requires a privacy-enabled wallet (Wallet API ≥ 0.10.3)" : undefined}
               >
                 {submitting === "shield" ? (
                   <>
@@ -692,7 +519,9 @@ export function PaymentsPanel({
               }
               className="w-full sm:w-auto"
               title={
-                !hasShieldedBalance
+                !strk20Capable
+                  ? "STRK20 privacy requires a privacy-enabled wallet (Wallet API ≥ 0.10.3)"
+                  : !hasShieldedBalance
                   ? "Shield STRK first — private payments spend your shielded balance."
                   : undefined
               }

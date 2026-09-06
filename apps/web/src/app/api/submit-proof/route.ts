@@ -9,8 +9,9 @@ import { Account, RpcProvider, hash } from "starknet";
  * After a business's private transfer confirms, the frontend fire-and-forgets
  * here. The route rebuilds the audit witness from the sealed threshold package
  * and submits it via `submit_proof_for`, attributed to the business — the
- * backend account must have been appointed via `set_relayer` (NOT_RELAYER /
- * NO_RELAYER otherwise). The auditor's scoped dashboard reads the record
+ * backend account is appointed automatically at registration (the business
+ * page bundles `set_relayer` into the register/set-auditor multicalls, so
+ * there is no toggle). The auditor's scoped dashboard reads the record
  * identically to a self-submitted proof.
  *
  * Commitment math mirrors packages/audit-sdk/src/build_witness.ts + types.ts
@@ -173,7 +174,7 @@ export async function POST(req: NextRequest) {
     }
     if (message.includes("NO_RELAYER") || message.includes("NOT_RELAYER")) {
       return NextResponse.json(
-        { error: "Backend is not this business's appointed relayer (call set_relayer first)" },
+        { error: "Backend is not this business's appointed relayer (appointed automatically at registration)" },
         { status: 500 },
       );
     }

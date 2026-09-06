@@ -56,6 +56,9 @@ const navItems: {
 
 type AppSidebarProps = {
   walletAddress?: string;
+  /** Every account the wallet exposes — one seed can own several contracts. */
+  accounts?: string[];
+  onSelectAccount?: (address: string) => void;
   balance?: string | null;
   balanceLoading?: boolean;
   onRefreshBalance?: () => void;
